@@ -1,0 +1,14 @@
+.git
+.env
+.env.*
+!.env.example
+node_modules
+**/node_modules
+**/dist
+data
+backups
+output
+.playwright-cli
+.codex
+.agents
+.omo

@@ -1,0 +1,34 @@
+[Unit]
+Description=Ongi API %i
+After=ongi-db.service
+Wants=ongi-db.service
+StartLimitIntervalSec=120
+StartLimitBurst=10
+
+[Container]
+Image=localhost/ongi-api:%i
+ContainerName=ongi-api-%i
+User=1000:1000
+Network=ongi.network
+NetworkAlias=api-%i
+EnvironmentFile=@HOME@/secrets/app.env
+Volume=ongi-uploads.volume:/data/uploads:U
+ReadOnly=true
+Tmpfs=/tmp:rw,size=128m
+NoNewPrivileges=true
+DropCapability=all
+StopTimeout=35
+LogDriver=k8s-file
+LogOpt=max-size=20mb
+HealthCmd=bun scripts/health.ts
+HealthInterval=15s
+HealthTimeout=5s
+HealthRetries=3
+HealthOnFailure=kill
+
+[Service]
+Restart=always
+RestartSec=3
+TimeoutStartSec=120
+TimeoutStopSec=35
+MemoryMax=1536M

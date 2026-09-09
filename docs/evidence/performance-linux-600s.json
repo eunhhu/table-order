@@ -1,0 +1,427 @@
+{
+  "at": "2026-09-09T11:47:54.855Z",
+  "database": "ongi_load_1788953862944",
+  "runtime": "1.4.0",
+  "platform": "linux",
+  "architecture": "arm64",
+  "tableCount": 100,
+  "guestSse": 500,
+  "staffSse": 20,
+  "seconds": 600,
+  "rate": 20,
+  "actualSeconds": 608.855220706,
+  "accepted": 12000,
+  "failures": 0,
+  "snapshotFailures": 0,
+  "snapshots": 140899,
+  "dbOrders": 12000,
+  "orderAmount": 12000000,
+  "p50ms": 21.617610000015702,
+  "p95ms": 659.1109330001054,
+  "p99ms": 1307.6663760000374,
+  "endToEndP95ms": 733.3909180000192,
+  "queueDelayP95ms": 3.2068060000019614,
+  "errors": {},
+  "measurements": [
+    {
+      "seconds": 15,
+      "accepted": 301,
+      "failures": 0,
+      "snapshotFailures": 0,
+      "openStreams": 520,
+      "dbOrders": 300,
+      "rssMB": 112,
+      "apiRssMB": 256
+    },
+    {
+      "seconds": 30,
+      "accepted": 600,
+      "failures": 0,
+      "snapshotFailures": 0,
+      "openStreams": 520,
+      "dbOrders": 600,
+      "rssMB": 107,
+      "apiRssMB": 286
+    },
+    {
+      "seconds": 45,
+      "accepted": 901,
+      "failures": 0,
+      "snapshotFailures": 0,
+      "openStreams": 520,
+      "dbOrders": 901,
+      "rssMB": 140,
+      "apiRssMB": 324
+    },
+    {
+      "seconds": 60,
+      "accepted": 1201,
+      "failures": 0,
+      "snapshotFailures": 0,
+      "openStreams": 520,
+      "dbOrders": 1201,
+      "rssMB": 155,
+      "apiRssMB": 325
+    },
+    {
+      "seconds": 75,
+      "accepted": 1494,
+      "failures": 0,
+      "snapshotFailures": 0,
+      "openStreams": 520,
+      "dbOrders": 1493,
+      "rssMB": 143,
+      "apiRssMB": 381
+    },
+    {
+      "seconds": 90,
+      "accepted": 1794,
+      "failures": 0,
+      "snapshotFailures": 0,
+      "openStreams": 520,
+      "dbOrders": 1794,
+      "rssMB": 160,
+      "apiRssMB": 429
+    },
+    {
+      "seconds": 105,
+      "accepted": 2101,
+      "failures": 0,
+      "snapshotFailures": 0,
+      "openStreams": 520,
+      "dbOrders": 2101,
+      "rssMB": 135,
+      "apiRssMB": 342
+    },
+    {
+      "seconds": 120,
+      "accepted": 2401,
+      "failures": 0,
+      "snapshotFailures": 0,
+      "openStreams": 520,
+      "dbOrders": 2401,
+      "rssMB": 145,
+      "apiRssMB": 381
+    },
+    {
+      "seconds": 135,
+      "accepted": 2700,
+      "failures": 0,
+      "snapshotFailures": 0,
+      "openStreams": 520,
+      "dbOrders": 2700,
+      "rssMB": 152,
+      "apiRssMB": 393
+    },
+    {
+      "seconds": 150,
+      "accepted": 2995,
+      "failures": 0,
+      "snapshotFailures": 0,
+      "openStreams": 520,
+      "dbOrders": 2995,
+      "rssMB": 167,
+      "apiRssMB": 400
+    },
+    {
+      "seconds": 165,
+      "accepted": 3296,
+      "failures": 0,
+      "snapshotFailures": 0,
+      "openStreams": 520,
+      "dbOrders": 3295,
+      "rssMB": 160,
+      "apiRssMB": 407
+    },
+    {
+      "seconds": 180,
+      "accepted": 3588,
+      "failures": 0,
+      "snapshotFailures": 0,
+      "openStreams": 520,
+      "dbOrders": 3581,
+      "rssMB": 147,
+      "apiRssMB": 407
+    },
+    {
+      "seconds": 195,
+      "accepted": 3896,
+      "failures": 0,
+      "snapshotFailures": 0,
+      "openStreams": 520,
+      "dbOrders": 3896,
+      "rssMB": 161,
+      "apiRssMB": 477
+    },
+    {
+      "seconds": 210,
+      "accepted": 4202,
+      "failures": 0,
+      "snapshotFailures": 0,
+      "openStreams": 520,
+      "dbOrders": 4202,
+      "rssMB": 146,
+      "apiRssMB": 374
+    },
+    {
+      "seconds": 225,
+      "accepted": 4502,
+      "failures": 0,
+      "snapshotFailures": 0,
+      "openStreams": 520,
+      "dbOrders": 4501,
+      "rssMB": 153,
+      "apiRssMB": 387
+    },
+    {
+      "seconds": 240,
+      "accepted": 4802,
+      "failures": 0,
+      "snapshotFailures": 0,
+      "openStreams": 520,
+      "dbOrders": 4802,
+      "rssMB": 143,
+      "apiRssMB": 376
+    },
+    {
+      "seconds": 255,
+      "accepted": 5102,
+      "failures": 0,
+      "snapshotFailures": 0,
+      "openStreams": 520,
+      "dbOrders": 5102,
+      "rssMB": 147,
+      "apiRssMB": 400
+    },
+    {
+      "seconds": 270,
+      "accepted": 5402,
+      "failures": 0,
+      "snapshotFailures": 0,
+      "openStreams": 520,
+      "dbOrders": 5402,
+      "rssMB": 154,
+      "apiRssMB": 402
+    },
+    {
+      "seconds": 285,
+      "accepted": 5702,
+      "failures": 0,
+      "snapshotFailures": 0,
+      "openStreams": 520,
+      "dbOrders": 5702,
+      "rssMB": 180,
+      "apiRssMB": 399
+    },
+    {
+      "seconds": 301,
+      "accepted": 5996,
+      "failures": 0,
+      "snapshotFailures": 0,
+      "openStreams": 461,
+      "dbOrders": 5991,
+      "rssMB": 173,
+      "apiRssMB": 469
+    },
+    {
+      "seconds": 315,
+      "accepted": 6302,
+      "failures": 0,
+      "snapshotFailures": 0,
+      "openStreams": 520,
+      "dbOrders": 6302,
+      "rssMB": 150,
+      "apiRssMB": 372
+    },
+    {
+      "seconds": 330,
+      "accepted": 6602,
+      "failures": 0,
+      "snapshotFailures": 0,
+      "openStreams": 520,
+      "dbOrders": 6602,
+      "rssMB": 151,
+      "apiRssMB": 379
+    },
+    {
+      "seconds": 345,
+      "accepted": 6902,
+      "failures": 0,
+      "snapshotFailures": 0,
+      "openStreams": 520,
+      "dbOrders": 6902,
+      "rssMB": 151,
+      "apiRssMB": 389
+    },
+    {
+      "seconds": 360,
+      "accepted": 7202,
+      "failures": 0,
+      "snapshotFailures": 0,
+      "openStreams": 520,
+      "dbOrders": 7202,
+      "rssMB": 149,
+      "apiRssMB": 402
+    },
+    {
+      "seconds": 375,
+      "accepted": 7502,
+      "failures": 0,
+      "snapshotFailures": 0,
+      "openStreams": 520,
+      "dbOrders": 7502,
+      "rssMB": 158,
+      "apiRssMB": 454
+    },
+    {
+      "seconds": 390,
+      "accepted": 7802,
+      "failures": 0,
+      "snapshotFailures": 0,
+      "openStreams": 520,
+      "dbOrders": 7802,
+      "rssMB": 191,
+      "apiRssMB": 421
+    },
+    {
+      "seconds": 405,
+      "accepted": 8102,
+      "failures": 0,
+      "snapshotFailures": 0,
+      "openStreams": 520,
+      "dbOrders": 8102,
+      "rssMB": 150,
+      "apiRssMB": 369
+    },
+    {
+      "seconds": 420,
+      "accepted": 8402,
+      "failures": 0,
+      "snapshotFailures": 0,
+      "openStreams": 520,
+      "dbOrders": 8402,
+      "rssMB": 159,
+      "apiRssMB": 409
+    },
+    {
+      "seconds": 435,
+      "accepted": 8702,
+      "failures": 0,
+      "snapshotFailures": 0,
+      "openStreams": 520,
+      "dbOrders": 8702,
+      "rssMB": 150,
+      "apiRssMB": 392
+    },
+    {
+      "seconds": 450,
+      "accepted": 9002,
+      "failures": 0,
+      "snapshotFailures": 0,
+      "openStreams": 520,
+      "dbOrders": 9002,
+      "rssMB": 175,
+      "apiRssMB": 432
+    },
+    {
+      "seconds": 465,
+      "accepted": 9301,
+      "failures": 0,
+      "snapshotFailures": 0,
+      "openStreams": 520,
+      "dbOrders": 9301,
+      "rssMB": 181,
+      "apiRssMB": 423
+    },
+    {
+      "seconds": 480,
+      "accepted": 9594,
+      "failures": 0,
+      "snapshotFailures": 0,
+      "openStreams": 520,
+      "dbOrders": 9594,
+      "rssMB": 202,
+      "apiRssMB": 477
+    },
+    {
+      "seconds": 495,
+      "accepted": 9895,
+      "failures": 0,
+      "snapshotFailures": 0,
+      "openStreams": 520,
+      "dbOrders": 9895,
+      "rssMB": 191,
+      "apiRssMB": 474
+    },
+    {
+      "seconds": 510,
+      "accepted": 10202,
+      "failures": 0,
+      "snapshotFailures": 0,
+      "openStreams": 520,
+      "dbOrders": 10202,
+      "rssMB": 157,
+      "apiRssMB": 405
+    },
+    {
+      "seconds": 525,
+      "accepted": 10502,
+      "failures": 0,
+      "snapshotFailures": 0,
+      "openStreams": 520,
+      "dbOrders": 10502,
+      "rssMB": 157,
+      "apiRssMB": 421
+    },
+    {
+      "seconds": 540,
+      "accepted": 10802,
+      "failures": 0,
+      "snapshotFailures": 0,
+      "openStreams": 520,
+      "dbOrders": 10802,
+      "rssMB": 163,
+      "apiRssMB": 430
+    },
+    {
+      "seconds": 555,
+      "accepted": 11098,
+      "failures": 0,
+      "snapshotFailures": 0,
+      "openStreams": 520,
+      "dbOrders": 11098,
+      "rssMB": 184,
+      "apiRssMB": 435
+    },
+    {
+      "seconds": 570,
+      "accepted": 11398,
+      "failures": 0,
+      "snapshotFailures": 0,
+      "openStreams": 520,
+      "dbOrders": 11398,
+      "rssMB": 188,
+      "apiRssMB": 453
+    },
+    {
+      "seconds": 585,
+      "accepted": 11694,
+      "failures": 0,
+      "snapshotFailures": 0,
+      "openStreams": 520,
+      "dbOrders": 11693,
+      "rssMB": 200,
+      "apiRssMB": 465
+    },
+    {
+      "seconds": 601,
+      "accepted": 12000,
+      "failures": 0,
+      "snapshotFailures": 0,
+      "openStreams": 467,
+      "dbOrders": 11984,
+      "rssMB": 178,
+      "apiRssMB": 428
+    }
+  ]
+}

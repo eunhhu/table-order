@@ -1,0 +1,12 @@
+[Unit]
+Description=Ongi database and photo backup
+After=ongi-db.service
+
+[Service]
+Type=oneshot
+Environment=ONGI_HOME=@HOME@
+ExecStart=/usr/bin/bash @HOME@/bin/ops backup
+TimeoutStartSec=1h
+Nice=10
+IOSchedulingClass=best-effort
+IOSchedulingPriority=7

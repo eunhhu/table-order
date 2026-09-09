@@ -1,0 +1,35 @@
+name: Verify
+on:
+  push:
+  pull_request:
+permissions:
+  contents: read
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    services:
+      postgres:
+        image: postgres:17.11-alpine
+        env:
+          POSTGRES_USER: table_order
+          POSTGRES_PASSWORD: isolated-ci-password
+          POSTGRES_DB: table_order_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U table_order -d table_order_test"
+          --health-interval 5s --health-timeout 5s --health-retries 10
+    env:
+      DATABASE_URL: postgres://table_order:isolated-ci-password@127.0.0.1:5432/table_order_test
+      PUBLIC_ORIGIN: http://localhost:5174
+      ADMIN_ORIGIN: http://localhost:5173
+      NODE_ENV: test
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.0
+      - run: bun install --frozen-lockfile
+      - run: bun run db:migrate
+      - run: bun run check

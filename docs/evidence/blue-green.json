@@ -1,0 +1,13 @@
+{
+  "at": "2026-09-09T12:03:47.651Z",
+  "accepted": 126,
+  "failed": 0,
+  "httpErrors": 0,
+  "healthChecks": 630,
+  "healthFailures": 0,
+  "streamConnections": 2,
+  "syncMessages": 128,
+  "oldAssetsPreserved": 2,
+  "amount": 126000,
+  "databaseAndGuestMatch": true
+}

@@ -1,0 +1,11 @@
+{
+  "name": "@table/ui",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/index.tsx",
+    "./styles.css": "./src/styles.css",
+    "./client": "./src/client.ts",
+    "./theme": "./src/theme.ts"
+  }
+}

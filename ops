@@ -1,0 +1,301 @@
+#!/usr/bin/env bash
+# Linux + systemd + rootful Podman. No operation here drops a production database.
+set -Eeuo pipefail
+umask 077
+ONGI_HOME=${ONGI_HOME:-/opt/ongi}
+REPO=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
+QUADLET=/etc/containers/systemd
+PG_IMAGE=docker.io/library/postgres:17.11-alpine
+CADDY_IMAGE=docker.io/library/caddy:2.11.4-alpine
+
+fail() { printf '%s\n' "$*" >&2; exit 1; }
+log() { printf '\n%s\n' "$*"; }
+need_root() {
+  [[ $(uname -s) == Linux && $EUID == 0 ]] || fail 'Linux 서버에서 sudo ./ops 로 실행해 주세요.'
+  command -v podman >/dev/null || fail 'Podman 5 이상을 먼저 설치해 주세요. README의 OS별 설치 명령을 참고하세요.'
+  local version
+  version=$(podman version --format '{{.Client.Version}}')
+  [[ ${version%%.*} -ge 5 ]] || fail "Podman 5 이상이 필요해요. 설치된 버전: $version"
+  for tool in flock tar sha256sum systemctl; do command -v "$tool" >/dev/null || fail "$tool 명령이 필요해요."; done
+  [[ -d /run/systemd/system ]] || fail 'systemd가 실행 중인 Linux 서버가 필요해요.'
+  [[ $ONGI_HOME =~ ^/[a-zA-Z0-9/_-]+$ ]] || fail 'ONGI_HOME에는 공백 없는 절대 경로를 사용해 주세요.'
+}
+load_site() {
+  [[ -f $ONGI_HOME/site ]] || fail '먼저 ./ops setup 도메인 을 실행해 주세요.'
+  SITE=$(<"$ONGI_HOME/site")
+  [[ $SITE =~ ^[a-zA-Z0-9][a-zA-Z0-9.-]+[a-zA-Z0-9]$ ]] || fail '저장된 도메인을 확인해 주세요.'
+}
+load_storage() {
+  DB_VOLUME=$(cat "$ONGI_HOME/database-volume" 2>/dev/null || printf 'ongi-db')
+  UPLOADS_VOLUME=$(cat "$ONGI_HOME/uploads-volume" 2>/dev/null || printf 'ongi-uploads')
+  [[ $DB_VOLUME =~ ^ongi(-restore-[a-z0-9-]+)?-db$ && $UPLOADS_VOLUME =~ ^ongi(-restore-[a-z0-9-]+)?-uploads$ ]] || fail '저장된 데이터 볼륨 이름을 확인해 주세요.'
+}
+render() {
+  load_storage
+  sed -e "s|@HOME@|$ONGI_HOME|g" -e "s|@DB_VOLUME@|$DB_VOLUME|g" -e "s|@UPLOADS_VOLUME@|$UPLOADS_VOLUME|g" "$1" > "$2"
+}
+wait_db() {
+  for _ in {1..60}; do
+    if podman exec "$1" pg_isready -q -U table_order -d table_order; then return; fi
+    sleep 1
+  done
+  fail 'DB가 준비되지 않았어요. 데이터는 그대로 두었습니다. ./ops status 로 확인해 주세요.'
+}
+wait_api() {
+  for _ in {1..40}; do
+    if podman exec "$1" bun scripts/health.ts >/dev/null 2>&1; then return; fi
+    sleep 1
+  done
+  return 1
+}
+render_caddy() {
+  sed -e "s|{\$SITE_ADDRESS}|$SITE|g" -e "s|{\$API_UPSTREAM}|api-$1:3000|g" "$REPO/infra/Caddyfile" > "$2"
+}
+
+setup() {
+  need_root
+  [[ ${1:-} =~ ^[a-zA-Z0-9][a-zA-Z0-9.-]+[a-zA-Z0-9]$ ]] || fail '사용법: sudo ./ops setup orders.example.com [관리자아이디]'
+  [[ $(podman info --format '{{.Host.CgroupsVersion}}') == v2 ]] || fail 'cgroup v2가 필요해요.'
+  [[ ${2:-owner} =~ ^[a-zA-Z0-9_-]{3,40}$ ]] || fail '아이디는 영문/숫자/_/- 3~40자를 사용해 주세요.'
+  install -d -m 700 "$ONGI_HOME" "$ONGI_HOME/secrets" "$ONGI_HOME/backups" "$ONGI_HOME/bin" "$ONGI_HOME/caddy"
+  install -d -m 755 "$ONGI_HOME/web" "$ONGI_HOME/web/releases" "$ONGI_HOME/web/shared/admin/assets" "$ONGI_HOME/web/shared/customer/assets" "$QUADLET"
+  if [[ -f $ONGI_HOME/site ]]; then
+    [[ $(<"$ONGI_HOME/site") == "$1" ]] || fail '기존 도메인과 달라요. 기존 설치를 덮어쓰지 않았습니다.'
+  else
+    printf '%s\n' "$1" > "$ONGI_HOME/site"
+  fi
+  load_site
+  if [[ ! -f $ONGI_HOME/secrets/db.env ]]; then
+    DB_PASSWORD=$(od -An -N32 -tx1 /dev/urandom | tr -d ' \n')
+    ADMIN_PASSWORD=$(od -An -N18 -tx1 /dev/urandom | tr -d ' \n')
+    printf 'POSTGRES_USER=table_order\nPOSTGRES_DB=table_order\nPOSTGRES_PASSWORD=%s\n' "$DB_PASSWORD" > "$ONGI_HOME/secrets/db.env"
+    printf 'DATABASE_URL=postgres://table_order:%s@database:5432/table_order\nPUBLIC_ORIGIN=https://%s\nADMIN_ORIGIN=https://%s\nADMIN_LOGIN=%s\nADMIN_PASSWORD=%s\nNODE_ENV=production\nHOST=0.0.0.0\nPORT=3000\nUPLOAD_DIR=/data/uploads\n' "$DB_PASSWORD" "$SITE" "$SITE" "${2:-owner}" "$ADMIN_PASSWORD" > "$ONGI_HOME/secrets/app.env"
+    printf '주소: https://%s/admin/\n아이디: %s\n초기 비밀번호: %s\n로그인 후 매장 설정에서 비밀번호를 변경하세요.\n' "$SITE" "${2:-owner}" "$ADMIN_PASSWORD" > "$ONGI_HOME/secrets/first-login.txt"
+    unset DB_PASSWORD ADMIN_PASSWORD
+  fi
+  [[ -f $ONGI_HOME/secrets/app.env ]] || fail 'app.env가 없어요. 기존 DB 비밀번호를 재생성하지 않았습니다.'
+  install -m 700 "$REPO/ops" "$ONGI_HOME/bin/ops"
+  for file in "$REPO"/infra/quadlet/*; do render "$file" "$QUADLET/$(basename "$file")"; done
+  # This template is activated only through a release-specific symlink.
+  printf '\n[Install]\nWantedBy=multi-user.target\n' >> "$QUADLET/ongi-api@.container"
+  render "$REPO/infra/ongi-backup.service" /etc/systemd/system/ongi-backup.service
+  install -m 644 "$REPO/infra/ongi-backup.timer" /etc/systemd/system/ongi-backup.timer
+  printf 'SITE_ADDRESS=%s\n' "$SITE" > "$ONGI_HOME/caddy/environment"
+  podman pull "$PG_IMAGE"
+  podman pull "$CADDY_IMAGE"
+  systemctl daemon-reload
+  systemctl start ongi-db.service
+  wait_db ongi-db
+  deploy
+  systemctl enable --now ongi-backup.timer
+  systemctl start ongi-backup.service
+  log "설치 완료: https://$SITE/admin/"
+  log "초기 로그인 정보: sudo cat $ONGI_HOME/secrets/first-login.txt"
+  log '도메인의 A/AAAA 레코드와 서버 80/443 포트를 확인하세요. 로컬 백업이 켜졌습니다. 원격 백업 설정은 README를 참고하세요.'
+}
+
+deploy() {
+  need_root
+  load_site
+  [[ -f $REPO/Containerfile ]] || fail '레포 디렉터리의 ./ops deploy 를 실행해 주세요.'
+  exec 9>"$ONGI_HOME/.deploy.lock"
+  flock -n 9 || fail '다른 배포 작업이 진행 중이에요.'
+  local release previous extract old_target
+  release=$(date -u +%Y%m%d%H%M%S)
+  previous=$(cat "$ONGI_HOME/active-release" 2>/dev/null || true)
+  [[ -z $previous ]] || backup
+  if [[ -n ${ONGI_IMAGE:-} ]]; then
+    [[ $ONGI_IMAGE != -* ]] || fail '올바른 사전 빌드 이미지 이름이 필요해요.'
+    podman image exists "$ONGI_IMAGE" || fail '지정한 사전 빌드 이미지를 먼저 내려받아 주세요.'
+    podman tag "$ONGI_IMAGE" "localhost/ongi-api:$release"
+  else
+    podman build --format docker --target api -t "localhost/ongi-api:$release" -f "$REPO/Containerfile" "$REPO"
+  fi
+  podman run --rm --network ongi --env-file "$ONGI_HOME/secrets/app.env" "localhost/ongi-api:$release" bun packages/db/src/migrate.ts
+  extract=$(podman create "localhost/ongi-api:$release")
+  install -d -m 755 "$ONGI_HOME/web/releases/$release"
+  podman cp "$extract:/app/public/." "$ONGI_HOME/web/releases/$release/"
+  podman rm "$extract" >/dev/null
+  chmod -R a+rX "$ONGI_HOME/web/releases/$release"
+  # Hashed assets are immutable and retained across updates for already-open browsers.
+  cp -an "$ONGI_HOME/web/releases/$release/admin/assets/." "$ONGI_HOME/web/shared/admin/assets/"
+  cp -an "$ONGI_HOME/web/releases/$release/customer/assets/." "$ONGI_HOME/web/shared/customer/assets/"
+  ln -s "ongi-api@.container" "$QUADLET/ongi-api@$release.container"
+  systemctl daemon-reload
+  systemctl start "ongi-api@$release.service"
+  if ! wait_api "ongi-api-$release"; then
+    systemctl stop "ongi-api@$release.service"
+    rm -f "$QUADLET/ongi-api@$release.container"
+    systemctl daemon-reload
+    fail '새 API가 준비되지 않아 기존 버전을 유지했어요. journalctl로 새 버전 오류를 확인하세요.'
+  fi
+  render_caddy "$release" "$ONGI_HOME/caddy/Caddyfile.next"
+  podman run --rm --network ongi -v "$ONGI_HOME/caddy:/etc/caddy:ro,z" "$CADDY_IMAGE" caddy validate --config /etc/caddy/Caddyfile.next --adapter caddyfile
+  old_target=$(readlink "$ONGI_HOME/web/current" || true)
+  ln -s "releases/$release" "$ONGI_HOME/web/current.next"
+  mv -Tf "$ONGI_HOME/web/current.next" "$ONGI_HOME/web/current"
+  if [[ -f $ONGI_HOME/caddy/Caddyfile ]]; then cp "$ONGI_HOME/caddy/Caddyfile" "$ONGI_HOME/caddy/Caddyfile.previous"; fi
+  mv "$ONGI_HOME/caddy/Caddyfile.next" "$ONGI_HOME/caddy/Caddyfile"
+  if podman container exists ongi-caddy && [[ $(podman inspect -f '{{.State.Running}}' ongi-caddy) == true ]]; then
+    if ! podman exec ongi-caddy caddy reload --config /etc/caddy/Caddyfile --adapter caddyfile; then
+      cp "$ONGI_HOME/caddy/Caddyfile.previous" "$ONGI_HOME/caddy/Caddyfile"
+      if [[ -n $old_target ]]; then ln -s "$old_target" "$ONGI_HOME/web/current.rollback"; mv -Tf "$ONGI_HOME/web/current.rollback" "$ONGI_HOME/web/current"; fi
+      systemctl stop "ongi-api@$release.service"
+      rm -f "$QUADLET/ongi-api@$release.container"
+      systemctl daemon-reload
+      fail '라우팅 전환이 실패해 기존 버전을 유지했어요.'
+    fi
+  else
+    systemctl start ongi-caddy.service
+  fi
+  printf '%s\n' "$release" > "$ONGI_HOME/active-release.next"
+  mv "$ONGI_HOME/active-release.next" "$ONGI_HOME/active-release"
+  if [[ -n $previous && $previous != "$release" ]]; then
+    log '새 API로 전환했습니다. 기존 요청이 끝나기를 35초 기다립니다.'
+    sleep 35
+    systemctl stop "ongi-api@$previous.service"
+    rm -f "$QUADLET/ongi-api@$previous.container"
+    systemctl daemon-reload
+  fi
+  log "배포 완료: $release · DB와 기존 해시 파일 보존"
+  flock -u 9
+}
+
+backup() {
+  need_root
+  load_storage
+  install -d -m 700 "$ONGI_HOME/backups"
+  exec 8>"$ONGI_HOME/.backup.lock"
+  flock -n 8 || fail '다른 백업이 진행 중이에요.'
+  local stamp target temporary remote
+  stamp=$(date -u +%Y%m%dT%H%M%SZ)
+  target="$ONGI_HOME/backups/$stamp"
+  temporary="$ONGI_HOME/backups/.partial-$stamp"
+  [[ ! -e $target && ! -e $temporary ]] || fail '같은 시각의 백업이 이미 있어요. 기존 백업은 유지했습니다. 잠시 후 다시 실행해 주세요.'
+  mkdir "$temporary"
+  # pg_dump uses a consistent snapshot. Photos are immutable and never deleted by menu edits.
+  podman exec ongi-db pg_dump -U table_order -d table_order -Fc --no-owner --no-privileges > "$temporary/database.dump"
+  podman run --rm --user 1000:1000 --network none -v "$UPLOADS_VOLUME:/source:ro" "$PG_IMAGE" tar -C /source -czf - . > "$temporary/uploads.tar.gz"
+  printf 'application=ongi\nformat=1\ndatabase_major=17\nstarted_at=%s\ncompleted_at=%s\nrelease=%s\n' "$stamp" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$(cat "$ONGI_HOME/active-release" 2>/dev/null || true)" > "$temporary/manifest.txt"
+  (cd "$temporary" && sha256sum database.dump uploads.tar.gz manifest.txt > SHA256SUMS)
+  mv "$temporary" "$target"
+  printf '%s\n' "$stamp" > "$ONGI_HOME/last-backup"
+  if [[ -s $ONGI_HOME/secrets/backup-target ]]; then
+    remote=$(<"$ONGI_HOME/secrets/backup-target")
+    [[ $remote == *:* && $remote != -* && $remote != *$'\n'* ]] || fail 'backup-target에는 SSH 원격 경로 user@host:/path 를 넣어 주세요.'
+    command -v rsync >/dev/null || fail '원격 백업에는 rsync가 필요해요.'
+    rsync -a --protect-args -e 'ssh -o BatchMode=yes -o StrictHostKeyChecking=yes -o ConnectTimeout=10' -- "$target/" "$remote/$stamp/"
+    printf '%s\n' "$stamp" > "$ONGI_HOME/last-remote-backup"
+  fi
+  # Only completed backups from this application, older than 14 days, are removed.
+  while IFS= read -r -d '' directory; do
+    [[ -f $directory/SHA256SUMS && -f $directory/manifest.txt ]] || continue
+    [[ $(head -n 1 "$directory/manifest.txt") == application=ongi ]] || continue
+    rm -rf -- "$directory"
+  done < <(find "$ONGI_HOME/backups" -mindepth 1 -maxdepth 1 -type d -name '20*T*Z' -mtime +14 -print0)
+  log "백업 완료: $target"
+  flock -u 8
+}
+
+restore() {
+  need_root
+  local source=${1:-} name=${2:-} instance secret
+  [[ -d $source && $name =~ ^[a-z0-9][a-z0-9-]{2,30}$ ]] || fail '사용법: sudo ./ops restore /백업/경로 복원환경이름'
+  source=$(cd "$source" && pwd)
+  (cd "$source" && sha256sum -c SHA256SUMS)
+  [[ $(head -n 1 "$source/manifest.txt") == application=ongi ]] || fail '온기 백업 파일이 아니에요.'
+  grep -qx 'database_major=17' "$source/manifest.txt" || fail '이 버전은 PostgreSQL 17 백업 복원을 지원해요.'
+  # Reject absolute paths or parent traversal before extracting a supplied archive.
+  tar -tzf "$source/uploads.tar.gz" | awk '/^\// || /(^|\/)\.\.(\/|$)/ {bad=1} END {exit bad}' || fail '사진 압축 파일의 경로가 올바르지 않아요.'
+  instance="ongi-restore-$name"
+  if podman volume exists "$instance-db" || podman volume exists "$instance-uploads" || podman container exists "$instance"; then fail '이미 있는 복원 환경입니다. 덮어쓰지 않았어요. 다른 이름을 사용하세요.'; fi
+  install -d -m 700 "$ONGI_HOME/restores/$name"
+  secret="$ONGI_HOME/restores/$name/db.env"
+  printf 'POSTGRES_USER=table_order\nPOSTGRES_DB=table_order\nPOSTGRES_PASSWORD=%s\n' "$(od -An -N32 -tx1 /dev/urandom | tr -d ' \n')" > "$secret"
+  podman volume create "$instance-db" >/dev/null
+  podman volume create "$instance-uploads" >/dev/null
+  podman run -d --name "$instance" --network none --env-file "$secret" -v "$instance-db:/var/lib/postgresql/data" "$PG_IMAGE" >/dev/null
+  wait_db "$instance"
+  podman exec -i "$instance" pg_restore --single-transaction --exit-on-error --no-owner --no-privileges -U table_order -d table_order < "$source/database.dump"
+  podman run --rm -i --user 1000:1000 --network none -v "$instance-uploads:/target:U" "$PG_IMAGE" tar -C /target -xzf - < "$source/uploads.tar.gz"
+  podman exec "$instance" psql -U table_order -d table_order -c 'SELECT (SELECT count(*) FROM orders) AS orders, (SELECT count(*) FROM visits) AS visits, (SELECT coalesce(sum((quantity-cancelled)::bigint*price),0) FROM order_items) AS order_amount, (SELECT coalesce(sum(amount::bigint),0) FROM payments WHERE voided_at IS NULL) AS payment_amount;' | tee "$ONGI_HOME/restores/$name/verification.txt"
+  printf '%s\n' "$source" > "$ONGI_HOME/restores/$name/source"
+  date -u +%Y-%m-%dT%H:%M:%SZ > "$ONGI_HOME/restores/$name/completed-at"
+  log "별도 환경 복원 완료: $instance · 운영 DB와 라우팅은 변경하지 않았습니다."
+  log '사진 참조 검증과 운영 전환 절차는 docs/operations.md를 참고하세요.'
+}
+
+activate_restore() {
+  need_root
+  load_site
+  load_storage
+  local name=${1:-} instance active archive restore_password
+  [[ $name =~ ^[a-z0-9][a-z0-9-]{2,30}$ && ${2:-} == --accept-backup-data ]] || fail '백업 이후 주문이 운영 조회에서 제외됩니다. 검증을 마친 뒤: sudo ./ops activate-restore 복원환경이름 --accept-backup-data'
+  [[ -f $REPO/infra/quadlet/ongi-db.volume ]] || fail '레포의 ./ops activate-restore 명령을 사용해 주세요.'
+  instance="ongi-restore-$name"
+  [[ -f $ONGI_HOME/restores/$name/completed-at && -s $ONGI_HOME/restores/$name/db.env ]] || fail '완료된 별도 복원 환경이 필요해요.'
+  [[ $DB_VOLUME != "$instance-db" ]] || fail '이미 운영에 사용 중인 복원 환경이에요.'
+  podman volume exists "$instance-db" && podman volume exists "$instance-uploads" || fail '복원된 볼륨을 찾을 수 없어요.'
+  active=$(<"$ONGI_HOME/active-release")
+  podman image exists "localhost/ongi-api:$active" || fail '현재 앱 이미지를 먼저 복구해 주세요.'
+  exec 9>"$ONGI_HOME/.deploy.lock"
+  flock -n 9 || fail '다른 배포 작업이 진행 중이에요.'
+  if podman exec ongi-db pg_isready -q -U table_order -d table_order; then backup; fi
+  archive="$ONGI_HOME/restores/$name/before-activation-$(date -u +%Y%m%dT%H%M%SZ)"
+  install -d -m 700 "$archive"
+  cp "$ONGI_HOME/secrets/app.env" "$ONGI_HOME/secrets/db.env" "$archive/"
+  printf '%s\n' "$DB_VOLUME" > "$archive/database-volume"
+  printf '%s\n' "$UPLOADS_VOLUME" > "$archive/uploads-volume"
+  log '백업 데이터로 전환하는 동안 주문 접속을 잠시 멈춥니다. 원본 데이터 볼륨은 보존합니다.'
+  trap 'printf "복원 전환 중 오류가 발생했습니다. ./ops status 와 journalctl을 확인하세요. 원본 설정: %s · 원본 볼륨은 보존되어 있습니다.\n" "$archive" >&2' ERR
+  systemctl stop ongi-caddy.service
+  systemctl stop 'ongi-api@*.service'
+  systemctl stop ongi-db.service
+  systemctl stop ongi-db-volume.service ongi-uploads-volume.service
+  podman stop "$instance" >/dev/null
+  printf '%s\n' "$instance-db" > "$ONGI_HOME/database-volume"
+  printf '%s\n' "$instance-uploads" > "$ONGI_HOME/uploads-volume"
+  cp "$ONGI_HOME/restores/$name/db.env" "$ONGI_HOME/secrets/db.env"
+  restore_password=$(sed -n 's/^POSTGRES_PASSWORD=//p' "$ONGI_HOME/secrets/db.env")
+  [[ $restore_password =~ ^[a-f0-9]{64}$ ]] || fail '복원 환경의 DB 비밀번호 형식을 확인해 주세요.'
+  sed "s|^DATABASE_URL=.*|DATABASE_URL=postgres://table_order:$restore_password@database:5432/table_order|" "$archive/app.env" > "$ONGI_HOME/secrets/app.env"
+  unset restore_password
+  render "$REPO/infra/quadlet/ongi-db.volume" "$QUADLET/ongi-db.volume"
+  render "$REPO/infra/quadlet/ongi-uploads.volume" "$QUADLET/ongi-uploads.volume"
+  systemctl daemon-reload
+  systemctl start ongi-db.service
+  wait_db ongi-db
+  podman run --rm --network ongi --env-file "$ONGI_HOME/secrets/app.env" "localhost/ongi-api:$active" bun packages/db/src/migrate.ts
+  systemctl start "ongi-api@$active.service"
+  wait_api "ongi-api-$active" || fail "복원 DB의 앱 준비 검사가 실패했어요. 원본 설정: $archive · Caddy는 멈춘 상태입니다. docs/operations.md의 복원 전환 복구 절차를 따라 주세요."
+  systemctl start ongi-caddy.service
+  trap - ERR
+  log "복원 데이터로 운영 전환 완료. 원본 설정: $archive · 원본 볼륨 보존 · 이후 배포와 백업은 복원된 볼륨을 사용합니다."
+  flock -u 9
+}
+
+status() {
+  need_root
+  systemctl --no-pager --full status ongi-db.service ongi-caddy.service ongi-backup.timer || true
+  if [[ -s $ONGI_HOME/active-release ]]; then
+    systemctl --no-pager --full status "ongi-api@$(<"$ONGI_HOME/active-release").service" || true
+    podman exec "ongi-api-$(<"$ONGI_HOME/active-release")" bun scripts/diagnostics.ts || true
+  fi
+  load_storage
+  printf '데이터 볼륨: %s · 사진 볼륨: %s\n' "$DB_VOLUME" "$UPLOADS_VOLUME"
+  podman ps --filter name=ongi --format 'table {{.Names}}\t{{.Status}}'
+  df -h "$ONGI_HOME" /var/lib/containers
+  printf '최근 로컬 백업: %s\n' "$(cat "$ONGI_HOME/last-backup" 2>/dev/null || printf '없음')"
+  printf '최근 원격 백업: %s\n' "$(cat "$ONGI_HOME/last-remote-backup" 2>/dev/null || printf '미설정 — 서버 상실 시 로컬 백업도 잃습니다')"
+  systemctl --no-pager --full status ongi-backup.service || true
+}
+
+case "${1:-help}" in
+  setup) shift; setup "$@" ;;
+  deploy) deploy ;;
+  backup) backup ;;
+  restore) shift; restore "$@" ;;
+  activate-restore) shift; activate_restore "$@" ;;
+  status) status ;;
+  *) printf '%s\n' '온기 운영 명령' 'sudo ./ops setup orders.example.com [owner]' 'sudo ./ops deploy' 'sudo ./ops status' 'sudo ./ops backup' 'sudo ./ops restore /opt/ongi/backups/백업이름 rehearsal-01' 'sudo ./ops activate-restore rehearsal-01 --accept-backup-data' ;;
+esac
