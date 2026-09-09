@@ -99,7 +99,7 @@ CREATE TABLE "sessions" (
 CREATE TABLE "settings" (
 	"id" integer PRIMARY KEY DEFAULT 1 NOT NULL,
 	"revision" integer DEFAULT 0 NOT NULL,
-	"name" text DEFAULT '온기 식당' NOT NULL,
+	"name" text DEFAULT '테이블 오더' NOT NULL,
 	"subtitle" text DEFAULT '정성껏 준비한 한 끼, 편하게 즐기세요.' NOT NULL,
 	"logo" text DEFAULT '' NOT NULL,
 	"accent" text DEFAULT '#087F78' NOT NULL,

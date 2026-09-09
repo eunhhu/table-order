@@ -39,7 +39,7 @@ function Login(props: { onLogin: (user: Staff) => void }) {
         <p>
           손님과 음식에 집중하세요.
           <br />
-          주문과 테이블은 온기가 챙길게요.
+          주문과 테이블은 오더가 챙길게요.
         </p>
         <form
           onSubmit={async (e) => {
@@ -82,7 +82,7 @@ function Login(props: { onLogin: (user: Staff) => void }) {
             {busy() ? "로그인 중…" : "매장으로 들어가기"}
           </Button>
         </form>
-        <div class="login-foot">온기 TABLE ORDER · 매장 전용</div>
+        <div class="login-foot">TABLE ORDER · 매장 전용</div>
       </div>
     </div>
   );

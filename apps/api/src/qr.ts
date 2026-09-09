@@ -125,7 +125,7 @@ export async function qrPdf(tableId?: string) {
   assert(tableIds.length <= 300, "전체 출력은 최대 300개 테이블까지 지원해요.");
   const pdf = await PDFDocument.create();
   pdf.setTitle(tableId ? "테이블 주문 QR 카드" : "전체 테이블 주문 QR 카드");
-  pdf.setCreator("온기 Table Order");
+  pdf.setCreator("Table Order");
   for (let i = 0; i < tableIds.length; i++) {
     const info = await qrInfo(tableIds[i]);
     const png = await pdf.embedPng(await poster(info));

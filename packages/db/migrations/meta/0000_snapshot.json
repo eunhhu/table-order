@@ -831,7 +831,7 @@
           "type": "text",
           "primaryKey": false,
           "notNull": true,
-          "default": "'온기 식당'"
+          "default": "'테이블 오더'"
         },
         "subtitle": {
           "name": "subtitle",

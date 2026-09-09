@@ -58,7 +58,7 @@ await db.transaction(async (tx) => {
     {
       name: "명란 감자전",
       price: 12000,
-      description: "겉은 바삭 속은 촉촉. 짭조름한 명란을 올린 온기 인기 메뉴.",
+      description: "겉은 바삭 속은 촉촉. 짭조름한 명란을 올린 인기 메뉴.",
       categoryId: cats[1].id,
       sort: 4,
     },

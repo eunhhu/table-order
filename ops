@@ -203,7 +203,7 @@ restore() {
   [[ -d $source && $name =~ ^[a-z0-9][a-z0-9-]{2,30}$ ]] || fail '사용법: sudo ./ops restore /백업/경로 복원환경이름'
   source=$(cd "$source" && pwd)
   (cd "$source" && sha256sum -c SHA256SUMS)
-  [[ $(head -n 1 "$source/manifest.txt") == application=ongi ]] || fail '온기 백업 파일이 아니에요.'
+  [[ $(head -n 1 "$source/manifest.txt") == application=ongi ]] || fail '백업 파일이 아니에요.'
   grep -qx 'database_major=17' "$source/manifest.txt" || fail '이 버전은 PostgreSQL 17 백업 복원을 지원해요.'
   # Reject absolute paths or parent traversal before extracting a supplied archive.
   tar -tzf "$source/uploads.tar.gz" | awk '/^\// || /(^|\/)\.\.(\/|$)/ {bad=1} END {exit bad}' || fail '사진 압축 파일의 경로가 올바르지 않아요.'
@@ -297,5 +297,5 @@ case "${1:-help}" in
   restore) shift; restore "$@" ;;
   activate-restore) shift; activate_restore "$@" ;;
   status) status ;;
-  *) printf '%s\n' '온기 운영 명령' 'sudo ./ops setup orders.example.com [owner]' 'sudo ./ops deploy' 'sudo ./ops status' 'sudo ./ops backup' 'sudo ./ops restore /opt/ongi/backups/백업이름 rehearsal-01' 'sudo ./ops activate-restore rehearsal-01 --accept-backup-data' ;;
+  *) printf '%s\n' '운영 명령' 'sudo ./ops setup orders.example.com [owner]' 'sudo ./ops deploy' 'sudo ./ops status' 'sudo ./ops backup' 'sudo ./ops restore /opt/ongi/backups/백업이름 rehearsal-01' 'sudo ./ops activate-restore rehearsal-01 --accept-backup-data' ;;
 esac

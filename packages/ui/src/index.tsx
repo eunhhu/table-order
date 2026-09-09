@@ -36,7 +36,7 @@ export function Brand(props: { compact?: boolean }) {
         <UtensilsCrossed size={23} />
       </span>
       <span>
-        온기
+        테이블 오더
         <span class="brand-sub">{props.compact ? "TABLE ORDER" : "매일의 식사를 따뜻하게"}</span>
       </span>
     </div>

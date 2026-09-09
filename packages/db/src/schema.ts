@@ -20,7 +20,7 @@ export const settings = pgTable(
   {
     id: integer("id").primaryKey().default(1),
     revision: integer("revision").notNull().default(0),
-    name: text("name").notNull().default("온기 식당"),
+    name: text("name").notNull().default("테이블 오더"),
     subtitle: text("subtitle").notNull().default("정성껏 준비한 한 끼, 편하게 즐기세요."),
     logo: text("logo").notNull().default(""),
     accent: text("accent").notNull().default("#087F78"),
