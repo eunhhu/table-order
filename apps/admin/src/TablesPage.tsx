@@ -496,11 +496,13 @@ function TableDetail(props: { tableId: string; onClose: () => void }) {
           {(q) => (
             <div class="stack">
               <p class="info-box">
-                수납 기록을 남기지 않고 테이블을 비워요. 손님이 퇴장했는지 확인해 주세요.
-                기존 손님의 메뉴 페이지는 종료돼요.
+                수납 기록을 남기지 않고 테이블을 비워요. 손님이 퇴장했는지 확인해 주세요. 기존
+                손님의 메뉴 페이지는 종료돼요.
               </p>
               <Show when={q().version !== visit()?.version || orders().length > 0}>
-                <p class="error-box">방문이나 주문 내용이 바뀌었어요. 닫고 최신 내용을 확인해 주세요.</p>
+                <p class="error-box">
+                  방문이나 주문 내용이 바뀌었어요. 닫고 최신 내용을 확인해 주세요.
+                </p>
               </Show>
               <Button
                 variant="danger"
