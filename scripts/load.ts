@@ -1,7 +1,8 @@
 import assert from "node:assert/strict";
 import { mkdir } from "node:fs/promises";
-import type { Action, AdminSnapshot, CommandResult } from "@table/contracts";
+import type { Action, AdminSnapshot, CommandResult, GuestSnapshot } from "@table/contracts";
 import postgres from "postgres";
+import { guestHash, guestRequestPath } from "./guest-client";
 
 const argument = (name: string, fallback: number) => {
   const index = process.argv.indexOf(name);
@@ -84,7 +85,7 @@ await db.insert(s.guests).values(
   tables.flatMap((t) =>
     t.cookies.map((cookie) => ({
       visitId: t.visitId,
-      tokenHash: hash(cookie.split("=")[1]),
+      tokenHash: guestHash(t.qrToken, cookie.split("=")[1]),
       expiresAt: expiration,
     })),
   ),
@@ -121,7 +122,7 @@ const controllers = new Set<AbortController>();
 const streamTasks = new Set<Promise<void>>();
 const orderIds = new Set<string>();
 async function request<T>(path: string, cookie: string, body?: unknown): Promise<T> {
-  const response = await fetch(`${base}${path}`, {
+  const response = await fetch(`${base}${guestRequestPath(path, cookie)}`, {
     method: body === undefined ? "GET" : "POST",
     headers: { cookie, "content-type": "application/json", origin: base },
     body: body === undefined ? undefined : JSON.stringify(body),
@@ -156,7 +157,7 @@ function subscribe(path: string, cookie: string, snapshot: string) {
   const periodic = setInterval(() => void refresh(), 6000 + Math.random() * 1500);
   const task = (async () => {
     try {
-      const response = await fetch(`${base}${path}`, {
+      const response = await fetch(`${base}${guestRequestPath(path, cookie)}`, {
         headers: { cookie },
         signal: controller.signal,
       });
@@ -258,20 +259,15 @@ async function orderAt(index: number) {
         { type: "payment.settle", visitId: v.id, version: v.version, method: "card", close: true },
         worker,
       );
-      await action({ type: "table.clean", id: t.id }, worker);
-      const next = await action({ type: "visit.open", tableId: t.id, guests: null }, worker);
-      t.visitId = (next.data as { visitId: string }).visitId;
-      t.orders = 0;
       for (const stream of t.streams) stream.abort();
       t.streams = [];
       for (let i = 0; i < t.cookies.length; i++) {
-        const joined = await fetch(`${base}/api/guest/${t.qrToken}/join`, {
-          method: "POST",
-          headers: { "content-type": "application/json", origin: base },
-          body: "{}",
+        const entered = await fetch(`${base}/api/guest/${t.qrToken}/enter`, {
+          redirect: "manual",
         });
-        assert.equal(joined.status, 200);
-        t.cookies[i] = joined.headers.get("set-cookie")?.split(";")[0] ?? "";
+        assert.equal(entered.status, 303);
+        t.cookies[i] = entered.headers.get("set-cookie")?.split(";")[0] ?? "";
+        assert(t.cookies[i]);
         t.streams.push(
           subscribe(
             `/api/guest/${t.qrToken}/events`,
@@ -280,6 +276,10 @@ async function orderAt(index: number) {
           ),
         );
       }
+      const next = await request<GuestSnapshot>(`/api/guest/${t.qrToken}/snapshot`, t.cookies[0]);
+      assert(next.visit);
+      t.visitId = next.visit.id;
+      t.orders = 0;
     }
   } catch (e) {
     failures++;

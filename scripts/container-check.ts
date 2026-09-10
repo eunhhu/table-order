@@ -7,6 +7,7 @@ import type {
   Insights,
 } from "@table/contracts";
 import sharp from "sharp";
+import { guestRequestPath } from "./guest-client";
 
 // Deliberately restricted to the disposable Linux installation used by this repository.
 if (process.env.PUBLIC_ORIGIN !== "https://ongi.localhost" || process.env.CHECK_ISOLATED !== "yes")
@@ -16,7 +17,7 @@ if (process.env.PUBLIC_ORIGIN !== "https://ongi.localhost" || process.env.CHECK_
 const origin = "http://127.0.0.1:3000";
 let staffCookie = "";
 async function call<T>(path: string, body?: unknown, cookie = staffCookie): Promise<T> {
-  const response = await fetch(`${origin}${path}`, {
+  const response = await fetch(`${origin}${guestRequestPath(path, cookie)}`, {
     method: body === undefined ? "GET" : "POST",
     headers: {
       cookie,
@@ -42,7 +43,10 @@ await act({ type: "table.save", name: `검증-${suffix}`, zoneId: null, sort: 1 
 let state = await call<AdminSnapshot>("/api/admin/snapshot");
 const table = state.tables.find((t) => t.name === `검증-${suffix}`);
 assert(table);
-await act({ type: "visit.open", tableId: table.id, guests: null });
+const entered = await fetch(`${origin}/api/guest/${table.qrToken}/enter`, { redirect: "manual" });
+assert.equal(entered.status, 303);
+const guestCookie = entered.headers.get("set-cookie")?.split(";")[0] ?? "";
+assert(guestCookie);
 const fixture = await sharp({
   create: { width: 160, height: 120, channels: 3, background: "#087f78" },
 })
@@ -73,13 +77,6 @@ state = await call<AdminSnapshot>("/api/admin/snapshot");
 const menu = state.menus.find((m) => m.name === `검증메뉴-${suffix}`);
 const visit = state.visits.find((v) => v.tableId === table.id);
 assert(menu && visit);
-const joined = await fetch(`${origin}/api/guest/${table.qrToken}/join`, {
-  method: "POST",
-  headers: { "content-type": "application/json", origin: "https://ongi.localhost" },
-  body: "{}",
-});
-assert.equal(joined.status, 200);
-const guestCookie = joined.headers.get("set-cookie")?.split(";")[0] ?? "";
 const request = {
   requestId: crypto.randomUUID(),
   lines: [{ menuId: menu.id, quantity: 2, expectedPrice: 1000, note: "" }],
@@ -139,7 +136,7 @@ console.log(
       "owner login",
       "table and menu create",
       "image upload and retrieval",
-      "guest join",
+      "guest QR entry",
       "idempotent guest order",
       "partial cancel",
       "acknowledge",

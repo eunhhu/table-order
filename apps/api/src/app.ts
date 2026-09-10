@@ -6,21 +6,12 @@ import { eq } from "drizzle-orm";
 import { Elysia } from "elysia";
 import sharp from "sharp";
 import { ZodError } from "zod";
-import {
-  grantVisit,
-  guestAccess,
-  guestCookie,
-  guestTable,
-  login,
-  logout,
-  owner,
-  staff,
-  staffCookie,
-} from "./auth";
+import { guestTable, login, logout, owner, staff, staffCookie } from "./auth";
 import { beginRequest, finishRequest, processDiagnostics, requestId } from "./diagnostics";
 import { AppError, assert } from "./errors";
 import { eventStream } from "./events";
-import { execute, guestActor, requestResult, submitGuestAtTable } from "./operations";
+import { enterGuestPage, guestPageAccess } from "./guest-page";
+import { execute, requestResult, submitGuest } from "./operations";
 import { poster, qrInfo, qrPdf } from "./qr";
 import { adminSnapshot, guestSnapshot, health, historyVisit, insights } from "./queries";
 
@@ -252,48 +243,39 @@ export const app = new Elysia({ serve: { maxRequestBodySize: 12 * 1024 * 1024, i
     set.headers["cache-control"] = "public, max-age=31536000, immutable";
     return Bun.file(resolve(uploadDir, params.name));
   })
+  .get("/api/guest/:qr/enter", ({ params }) => enterGuestPage(params.qr))
   .get("/api/guest/:qr/snapshot", async ({ request, params }) => {
-    assert(
-      /^[a-f0-9]{32}$/.test(params.qr),
-      "올바른 테이블 QR로 접속해 주세요.",
-      "INVALID_QR",
-      404,
-    );
-    const access = await guestAccess(request, params.qr);
-    return guestSnapshot(params.qr, access?.state === "open" ? access.id : null);
+    const access = await guestPageAccess(request, params.qr);
+    return guestSnapshot(params.qr, access.visit.id);
   })
   .post("/api/guest/:qr/join", async ({ params, body }) => {
+    // Legacy validation endpoint: never creates or renews a guest credential.
     assert(/^[a-f0-9]{32}$/.test(params.qr), "올바른 QR로 접속해 주세요.", "INVALID_QR", 404);
     joinSchema.parse(body);
     await guestTable(params.qr);
     return { ok: true };
   })
-  .post("/api/guest/:qr/orders", async ({ request, params, body, set }) => {
-    assert(/^[a-f0-9]{32}$/.test(params.qr), "올바른 QR로 접속해 주세요.", "INVALID_QR", 404);
-    const access = await guestAccess(request, params.qr);
-    const result = await submitGuestAtTable(
-      params.qr,
-      guestOrderSchema.parse(body),
-      access?.state === "open" ? access.id : undefined,
+  .post("/api/guest/:qr/orders", async ({ request, params, body }) => {
+    const access = await guestPageAccess(request, params.qr);
+    assert(
+      access.visit.state === "open",
+      "이 이용은 종료됐어요. QR을 다시 스캔해 주세요.",
+      "VISIT_ENDED",
+      410,
     );
-    if (access?.state !== "open") {
-      const visitId = (result.data as { visitId: string }).visitId;
-      set.headers["set-cookie"] = guestCookie(params.qr, await grantVisit(visitId));
-    }
-    return result;
+    // Client visitId is not an authority. The transaction rechecks this bound visit.
+    const input = guestOrderSchema.omit({ visitId: true }).parse(body);
+    return submitGuest(access.visit.id, input);
   })
-  .get("/api/guest/:qr/requests/:id", async ({ params }) => {
-    assert(/^[a-f0-9]{32}$/.test(params.qr), "올바른 QR로 접속해 주세요.", "INVALID_QR", 404);
-    return { result: await requestResult(guestActor(params.qr), id.parse(params.id)) };
+  .get("/api/guest/:qr/requests/:id", async ({ request, params }) => {
+    const access = await guestPageAccess(request, params.qr);
+    // A closed visit may confirm an already-committed request, never create another.
+    return { result: await requestResult(`guest:${access.visit.id}`, id.parse(params.id)) };
   })
   .get("/api/guest/:qr/events", async ({ request, params }) => {
-    const table = await guestTable(params.qr);
-    const access = await guestAccess(request, params.qr);
-    return eventStream(
-      request,
-      { tableId: table.id, visitId: access?.state === "open" ? access.id : undefined },
-      Date.now() + 24 * 3600_000,
-    );
+    const access = await guestPageAccess(request, params.qr);
+    assert(access.visit.state === "open", "이 이용은 종료됐어요.", "VISIT_ENDED", 410);
+    return eventStream(request, { visitId: access.visit.id }, access.expiresAt.getTime());
   });
 
 export type App = typeof app;

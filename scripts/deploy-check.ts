@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { mkdir } from "node:fs/promises";
 import type { Action, AdminSnapshot, CommandResult, GuestSnapshot } from "@table/contracts";
+import { guestRequestPath } from "./guest-client";
 
 if (process.env.CHECK_ISOLATED !== "yes" || process.env.PUBLIC_ORIGIN !== "https://ongi.localhost")
   throw new Error("Only the isolated ongi.localhost deployment is supported.");
@@ -14,7 +15,7 @@ const raw = (path: string, options: RequestInit = {}) =>
     signal: options.signal ?? AbortSignal.timeout(12000),
   });
 async function request<T>(path: string, body?: unknown, cookie = staffCookie): Promise<T> {
-  const response = await raw(path, {
+  const response = await raw(guestRequestPath(path, cookie), {
     method: body === undefined ? "GET" : "POST",
     headers: { cookie, origin: base, "content-type": "application/json" },
     body: body === undefined ? undefined : JSON.stringify(body),
@@ -36,14 +37,10 @@ let snapshot = await request<AdminSnapshot>("/api/admin/snapshot");
 const table = snapshot.tables.find((t) => t.name === tableName),
   menu = snapshot.menus.find((m) => m.visible && m.available);
 assert(table && menu);
-await act({ type: "visit.open", tableId: table.id, guests: null });
-const joined = await raw(`/api/guest/${table.qrToken}/join`, {
-  method: "POST",
-  headers: { origin: base, "content-type": "application/json" },
-  body: "{}",
-});
-assert.equal(joined.status, 200);
-const guestCookie = joined.headers.get("set-cookie")?.split(";")[0] ?? "";
+const entered = await raw(`/api/guest/${table.qrToken}/enter`, { redirect: "manual" });
+assert.equal(entered.status, 303);
+const guestCookie = entered.headers.get("set-cookie")?.split(";")[0] ?? "";
+assert(guestCookie);
 const html = await (await raw("/admin/")).text();
 const oldAssets = [...html.matchAll(/(?:src|href)="(\/admin\/assets\/[^"]+)"/g)].map((m) => m[1]);
 assert(oldAssets.length >= 2);

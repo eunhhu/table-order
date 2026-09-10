@@ -3,6 +3,7 @@ import type { Action, AdminSnapshot, GuestOrder, GuestSnapshot, Staff } from "@t
 import { db, schema as s } from "@table/db";
 import { eq, sql } from "drizzle-orm";
 import { app } from "../../apps/api/src/app";
+import { guestPageHash } from "../../apps/api/src/guest-page";
 import { execute, submitGuest, submitGuestAtTable } from "../../apps/api/src/operations";
 import { adminSnapshot, guestSnapshot } from "../../apps/api/src/queries";
 
@@ -268,7 +269,7 @@ describe("durable orders and concurrent restaurant operations", () => {
     const result = await submitGuestAtTable(qr, basket());
     const newVisitId = (result.data as { visitId: string }).visitId;
     expect(newVisitId).not.toBe(visitId);
-    const current = await guestSnapshot(qr);
+    const current = await guestSnapshot(qr, newVisitId);
     expect(current.joined).toBe(true);
     expect(current.ended).toBe(false);
     expect(current.orders).toHaveLength(1);
@@ -327,8 +328,11 @@ describe("HTTP authorization and request boundary", () => {
     cookie?: string,
     origin = "http://localhost:5173",
   ) {
+    const url = new URL(path, "http://localhost:3000");
+    if (cookie?.startsWith(`guest_${qr}=`))
+      url.searchParams.set("page", guestPageHash(qr, cookie.split("=")[1]));
     return app.handle(
-      new Request(`http://localhost:3000${path}`, {
+      new Request(url, {
         method: body === undefined ? "GET" : "POST",
         headers: {
           origin,
@@ -376,18 +380,19 @@ describe("HTTP authorization and request boundary", () => {
       ).status,
     ).toBe(403);
   });
-  test("guest ordering works immediately without joining or any staff receiver", async () => {
-    const response = await request(`/api/guest/${qr}/join`, {}, undefined, "http://localhost:5174");
-    expect(response.status).toBe(200);
+  test("QR entry allows ordering without a PIN or staff receiver", async () => {
+    const entered = await request(`/api/guest/${qr}/enter`);
+    expect(entered.status).toBe(303);
+    const cookie = entered.headers.get("set-cookie")?.split(";")[0];
+    expect(cookie).toBeTruthy();
     const result = await request(
       `/api/guest/${qr}/orders`,
       basket(),
-      undefined,
+      cookie,
       "http://localhost:5174",
     );
     expect(result.status).toBe(200);
-    const cookie = result.headers.get("set-cookie")?.split(";")[0];
-    expect(cookie).toBeTruthy();
+    expect(result.headers.get("set-cookie")).toBeNull();
     const state = (await (
       await request(`/api/guest/${qr}/snapshot`, undefined, cookie)
     ).json()) as GuestSnapshot;

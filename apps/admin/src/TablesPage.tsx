@@ -56,7 +56,7 @@ export function TablesPage() {
       suffix: `/ ${data().tables.length}`,
       icon: LayoutGrid,
       tone: "teal",
-      caption: "첫 주문부터 정산 전까지",
+      caption: "QR 진입부터 정산·퇴석 전까지",
     },
     {
       label: "확인할 새 주문",
@@ -233,7 +233,7 @@ export function TablesPage() {
                     </small>
                     <Show
                       when={tableVisit(table.id)}
-                      fallback={<div class="empty-table-caption">첫 주문을 기다리고 있어요</div>}
+                      fallback={<div class="empty-table-caption">QR 스캔을 기다리고 있어요</div>}
                     >
                       {(v) => (
                         <>
@@ -252,7 +252,9 @@ export function TablesPage() {
                   <footer class="table-card-bottom">
                     <Show when={table.state === "occupied"}>
                       <button type="button" onClick={() => setSelected(table.id)}>
-                        {left(table.id) ? (
+                        {!orders(table.id).length ? (
+                          <>첫 주문 대기</>
+                        ) : left(table.id) ? (
                           <>
                             <span class="dot orange" />
                             나갈 음식 {left(table.id)}개
@@ -289,6 +291,7 @@ function TableDetail(props: { tableId: string; onClose: () => void }) {
   const [add, setAdd] = createSignal<string>();
   const [move, setMove] = createSignal(false);
   const [quote, setQuote] = createSignal<Visit>();
+  const [closing, setClosing] = createSignal<Visit>();
   let drawer!: HTMLDialogElement;
   onMount(() => drawer.showModal());
   return (
@@ -321,7 +324,7 @@ function TableDetail(props: { tableId: string; onClose: () => void }) {
           fallback={
             <Empty
               title="빈 테이블이에요"
-              description="손님이 첫 주문을 보내면 자동으로 손님 있음 상태로 바뀌어요."
+              description="손님이 QR을 스캔하면 자동으로 손님 있음 상태로 바뀌어요."
             />
           }
         >
@@ -413,14 +416,28 @@ function TableDetail(props: { tableId: string; onClose: () => void }) {
                   >
                     이동
                   </Button>
-                  <Button
-                    class="grow"
-                    icon={<CreditCard size={17} />}
-                    disabled={ctx.busy()}
-                    onClick={() => setQuote({ ...v() })}
+                  <Show
+                    when={orders().length === 0 && v().state === "open"}
+                    fallback={
+                      <Button
+                        class="grow"
+                        icon={<CreditCard size={17} />}
+                        disabled={ctx.busy()}
+                        onClick={() => setQuote({ ...v() })}
+                      >
+                        정산하고 테이블 비우기
+                      </Button>
+                    }
                   >
-                    정산하고 테이블 비우기
-                  </Button>
+                    <Button
+                      class="grow"
+                      variant="secondary"
+                      disabled={ctx.busy()}
+                      onClick={() => setClosing({ ...v() })}
+                    >
+                      주문 없이 테이블 비우기
+                    </Button>
+                  </Show>
                 </div>
               </footer>
             </>
@@ -467,6 +484,50 @@ function TableDetail(props: { tableId: string; onClose: () => void }) {
         </div>
         <Show when={!data().tables.some((t) => t.state === "empty")}>
           <Empty title="이동할 빈 테이블이 없어요" />
+        </Show>
+      </Modal>
+      <Modal
+        open={!!closing()}
+        title="주문 없이 방문을 종료할까요?"
+        onClose={() => setClosing(undefined)}
+        busy={ctx.busy()}
+      >
+        <Show when={closing()}>
+          {(q) => (
+            <div class="stack">
+              <p class="info-box">
+                수납 기록을 남기지 않고 테이블을 비워요. 손님이 퇴장했는지 확인해 주세요. 기존
+                손님의 메뉴 페이지는 종료돼요.
+              </p>
+              <Show when={q().version !== visit()?.version || orders().length > 0}>
+                <p class="error-box">
+                  방문이나 주문 내용이 바뀌었어요. 닫고 최신 내용을 확인해 주세요.
+                </p>
+              </Show>
+              <Button
+                variant="danger"
+                disabled={
+                  ctx.busy() ||
+                  q().id !== visit()?.id ||
+                  q().version !== visit()?.version ||
+                  visit()?.state !== "open" ||
+                  orders().length > 0
+                }
+                onClick={async () => {
+                  const result = await ctx.run(
+                    { type: "visit.close", visitId: q().id, version: q().version },
+                    "수납 기록 없이 방문을 종료했어요.",
+                  );
+                  if (result) {
+                    setClosing(undefined);
+                    props.onClose();
+                  }
+                }}
+              >
+                퇴장 확인 · 테이블 비우기
+              </Button>
+            </div>
+          )}
         </Show>
       </Modal>
       <Modal
