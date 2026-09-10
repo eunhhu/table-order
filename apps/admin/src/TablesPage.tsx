@@ -24,6 +24,8 @@ export function TablesPage() {
   const [zone, setZone] = createRememberedString(`${preference}:zone`);
   const [filter, setFilter] = createRememberedString(`${preference}:filter`, "all");
   const [search, setSearch] = createRememberedString(`${preference}:search`);
+  if (!["all", "occupied", "new", "unserved", "unpaid", "empty"].includes(filter()))
+    setFilter("all");
   const [selected, setSelected] = createSignal<string>();
   const data = ctx.data;
   const tableVisit = (id: string) => data().visits.find((v) => v.tableId === id);
@@ -44,18 +46,17 @@ export function TablesPage() {
           (filter() === "occupied" && t.state === "occupied") ||
           (filter() === "unserved" && left(t.id) > 0) ||
           (filter() === "unpaid" && tableVisit(t.id)?.state === "open") ||
-          (filter() === "empty" && t.state === "empty") ||
-          (filter() === "cleaning" && t.state === "cleaning")),
+          (filter() === "empty" && t.state !== "occupied")),
     ),
   );
   const stats = () => [
     {
-      label: "이용 중 테이블",
+      label: "손님 있는 테이블",
       value: data().tables.filter((t) => t.state === "occupied").length,
       suffix: `/ ${data().tables.length}`,
       icon: LayoutGrid,
       tone: "teal",
-      caption: "지금 함께하는 손님",
+      caption: "첫 주문부터 정산 전까지",
     },
     {
       label: "확인할 새 주문",
@@ -158,12 +159,11 @@ export function TablesPage() {
             <For
               each={[
                 { id: "all", label: "전체" },
-                { id: "occupied", label: "이용 중" },
+                { id: "occupied", label: "손님 있음" },
                 { id: "new", label: "새 주문" },
                 { id: "unserved", label: "미서빙" },
                 { id: "unpaid", label: "미정산" },
                 { id: "empty", label: "빈 테이블" },
-                { id: "cleaning", label: "정리 중" },
               ]}
             >
               {(f) => (
@@ -180,7 +180,7 @@ export function TablesPage() {
           <div class="legend">
             <span>
               <i class="dot teal" />
-              이용 중
+              손님 있음
             </span>
             <span>
               <i class="dot orange" />새 주문
@@ -223,13 +223,9 @@ export function TablesPage() {
                       >
                         {isNew(table.id)
                           ? "새 주문"
-                          : table.state === "empty"
+                          : table.state !== "occupied"
                             ? "빈 테이블"
-                            : table.state === "cleaning"
-                              ? "정리 중"
-                              : tableVisit(table.id)?.state === "settled"
-                                ? "정산 완료"
-                                : "이용 중"}
+                            : "손님 있음"}
                       </Pill>
                     </div>
                     <small class="table-zone">
@@ -237,13 +233,7 @@ export function TablesPage() {
                     </small>
                     <Show
                       when={tableVisit(table.id)}
-                      fallback={
-                        <div class="empty-table-caption">
-                          {table.state === "cleaning"
-                            ? "다음 손님을 맞을 준비"
-                            : "새로운 손님을 기다려요"}
-                        </div>
-                      }
+                      fallback={<div class="empty-table-caption">첫 주문을 기다리고 있어요</div>}
                     >
                       {(v) => (
                         <>
@@ -260,36 +250,6 @@ export function TablesPage() {
                     </Show>
                   </button>
                   <footer class="table-card-bottom">
-                    <Show when={table.state === "empty"}>
-                      <button
-                        type="button"
-                        disabled={ctx.busy()}
-                        onClick={() =>
-                          void ctx.run(
-                            { type: "visit.open", tableId: table.id, guests: null },
-                            `${table.name}번 테이블에 손님을 받았어요.`,
-                          )
-                        }
-                      >
-                        <Plus size={15} />
-                        손님 받기
-                      </button>
-                    </Show>
-                    <Show when={table.state === "cleaning"}>
-                      <button
-                        type="button"
-                        disabled={ctx.busy()}
-                        onClick={() =>
-                          void ctx.run(
-                            { type: "table.clean", id: table.id },
-                            "테이블 정리를 마쳤어요.",
-                          )
-                        }
-                      >
-                        <Check size={15} />
-                        정리 완료
-                      </button>
-                    </Show>
                     <Show when={table.state === "occupied"}>
                       <button type="button" onClick={() => setSelected(table.id)}>
                         {left(table.id) ? (
@@ -329,7 +289,6 @@ function TableDetail(props: { tableId: string; onClose: () => void }) {
   const [add, setAdd] = createSignal<string>();
   const [move, setMove] = createSignal(false);
   const [quote, setQuote] = createSignal<Visit>();
-  const [closeAfter, setCloseAfter] = createSignal(true);
   let drawer!: HTMLDialogElement;
   onMount(() => drawer.showModal());
   return (
@@ -361,27 +320,8 @@ function TableDetail(props: { tableId: string; onClose: () => void }) {
           when={visit()}
           fallback={
             <Empty
-              title={
-                table()?.state === "cleaning"
-                  ? "정리 중인 테이블이에요"
-                  : "손님을 맞을 준비가 됐어요"
-              }
-              action={
-                <Button
-                  disabled={ctx.busy() || !table()}
-                  onClick={() => {
-                    const current = table();
-                    if (current)
-                      void ctx.run(
-                        current.state === "cleaning"
-                          ? { type: "table.clean", id: current.id }
-                          : { type: "visit.open", tableId: current.id, guests: null },
-                      );
-                  }}
-                >
-                  {table()?.state === "cleaning" ? "정리 완료" : "손님 받기"}
-                </Button>
-              }
+              title="빈 테이블이에요"
+              description="손님이 첫 주문을 보내면 자동으로 손님 있음 상태로 바뀌어요."
             />
           }
         >
@@ -390,7 +330,7 @@ function TableDetail(props: { tableId: string; onClose: () => void }) {
               <div class="drawer-scroll">
                 <div class="visit-summary">
                   <div class="row between">
-                    <Pill tone="teal">{v().state === "settled" ? "정산 완료" : "이용 중"}</Pill>
+                    <Pill tone="teal">손님 있음</Pill>
                     <span class="muted">{minutes(v().startedAt)}분 이용</span>
                   </div>
                   <div class="row between guest-selector">
@@ -430,11 +370,6 @@ function TableDetail(props: { tableId: string; onClose: () => void }) {
                       </button>
                     </div>
                   </div>
-                  <Show when={ctx.live.data()?.settings.pinRequired}>
-                    <div class="info-box">
-                      손님 입장코드 <strong>{v().joinCode}</strong>
-                    </div>
-                  </Show>
                 </div>
                 <div class="row between drawer-section-head">
                   <h3>
@@ -478,51 +413,15 @@ function TableDetail(props: { tableId: string; onClose: () => void }) {
                   >
                     이동
                   </Button>
-                  <Show
-                    when={v().state === "open"}
-                    fallback={
-                      <Button
-                        class="grow"
-                        disabled={ctx.busy()}
-                        onClick={() =>
-                          void ctx.run(
-                            { type: "visit.close", visitId: v().id, version: v().version },
-                            "퇴석 처리했어요.",
-                          )
-                        }
-                      >
-                        퇴석 · 정리 시작
-                      </Button>
-                    }
-                  >
-                    <Button
-                      class="grow"
-                      icon={<CreditCard size={17} />}
-                      disabled={ctx.busy()}
-                      onClick={() => {
-                        setQuote({ ...v() });
-                        setCloseAfter(true);
-                      }}
-                    >
-                      정산하기
-                    </Button>
-                  </Show>
-                </div>
-                <Show when={v().total === 0 && v().state === "open"}>
                   <Button
-                    variant="ghost"
-                    class="block small"
+                    class="grow"
+                    icon={<CreditCard size={17} />}
                     disabled={ctx.busy()}
-                    onClick={() =>
-                      void ctx.run(
-                        { type: "visit.close", visitId: v().id, version: v().version },
-                        "빈 주문 방문을 종료했어요.",
-                      )
-                    }
+                    onClick={() => setQuote({ ...v() })}
                   >
-                    주문 없이 퇴석
+                    정산하고 테이블 비우기
                   </Button>
-                </Show>
+                </div>
               </footer>
             </>
           )}
@@ -597,27 +496,7 @@ function TableDetail(props: { tableId: string; onClose: () => void }) {
                   최신 주문과 금액 확인
                 </Button>
               </Show>
-              <Show when={orders().some((o) => o.items.some((i) => remaining(i) > 0))}>
-                <div class="info-box">
-                  아직 나가지 않은 음식이 있어요. 식사 중이면 아래에서 정산만 선택해 주세요.
-                </div>
-              </Show>
-              <div class="chips">
-                <button
-                  type="button"
-                  class={`chip ${closeAfter() ? "active" : ""}`}
-                  onClick={() => setCloseAfter(true)}
-                >
-                  정산 후 퇴석
-                </button>
-                <button
-                  type="button"
-                  class={`chip ${!closeAfter() ? "active" : ""}`}
-                  onClick={() => setCloseAfter(false)}
-                >
-                  정산만 · 식사 중
-                </button>
-              </div>
+              <div class="info-box">수납 기록을 남기면 테이블이 바로 빈 상태로 바뀌어요.</div>
               <div class="payment-buttons">
                 <For
                   each={
@@ -640,18 +519,18 @@ function TableDetail(props: { tableId: string; onClose: () => void }) {
                             visitId: q().id,
                             version: q().version,
                             method: method.id,
-                            close: closeAfter(),
+                            close: true,
                           },
                           "수납을 기록했어요.",
                         );
                         if (result) {
                           setQuote(undefined);
-                          if (closeAfter()) props.onClose();
+                          props.onClose();
                         }
                       }}
                     >
                       {method.name}
-                      {method.id === "cash" ? "으로" : "로"} 정산{closeAfter() ? " · 퇴석" : ""}
+                      {method.id === "cash" ? "으로" : "로"} 정산 완료
                     </Button>
                   )}
                 </For>

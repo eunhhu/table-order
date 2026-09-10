@@ -133,12 +133,6 @@ export function SettingsPage() {
               label="조리 완료를 따로 기록"
               detail="기본은 확인 → 음식 나감 두 번이에요. 주방에서 세부 단계를 구분할 때 켜주세요."
             />
-            <CheckField
-              checked={draft().pinRequired}
-              onChange={(v) => update("pinRequired", v)}
-              label="방문별 입장코드 사용"
-              detail="켜면 손님이 QR 접속 후 직원에게 받은 코드를 입력해요. 고정 QR만 사용하면 링크를 보관한 사람이 다시 입장할 수 있어요."
-            />
             <Field
               label="영업일 마감 시간"
               hint="한국 시간 기준. 새벽 영업을 전날 매출과 함께 볼 수 있어요."
@@ -215,11 +209,7 @@ export function SettingsPage() {
                         </td>
                         <td>
                           <Pill tone={t.state === "occupied" ? "teal" : "neutral"}>
-                            {t.state === "empty"
-                              ? "빈 테이블"
-                              : t.state === "occupied"
-                                ? "이용 중"
-                                : "정리 중"}
+                            {t.state === "occupied" ? "손님 있음" : "빈 테이블"}
                           </Pill>
                         </td>
                         <td>

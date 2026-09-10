@@ -6,6 +6,9 @@ import { AppError, assert, requireValue } from "./errors";
 
 export const hash = (value: string) => createHash("sha256").update(value).digest("hex");
 export const token = () => randomBytes(32).toString("hex");
+const STAFF_COOKIE_SECONDS = 365 * 24 * 60 * 60;
+const STAFF_IDLE_MS = 30 * 24 * 60 * 60_000;
+const STAFF_REFRESH_AFTER_MS = 24 * 60 * 60_000;
 export const cookieValue = (request: Request, name: string) => {
   const raw = request.headers
     .get("cookie")
@@ -15,9 +18,9 @@ export const cookieValue = (request: Request, name: string) => {
   return raw?.slice(name.length + 1) ?? "";
 };
 export const staffCookie = (value: string, clear = false) =>
-  `staff_session=${value}; Path=/api; HttpOnly; SameSite=Strict; Max-Age=${clear ? 0 : 43200}${process.env.NODE_ENV === "production" ? "; Secure" : ""}`;
+  `staff_session=${value}; Path=/api; HttpOnly; SameSite=Strict; Max-Age=${clear ? 0 : STAFF_COOKIE_SECONDS}${process.env.NODE_ENV === "production" ? "; Secure" : ""}`;
 export const guestCookie = (qr: string, value: string) =>
-  `guest_${qr}=${value}; Path=/api/guest/${qr}; HttpOnly; SameSite=Lax; Max-Age=86400${process.env.NODE_ENV === "production" ? "; Secure" : ""}`;
+  `guest_${qr}=${value}; Path=/api/guest/${qr}; HttpOnly; SameSite=Lax; Max-Age=${30 * 24 * 60 * 60}${process.env.NODE_ENV === "production" ? "; Secure" : ""}`;
 
 export async function staff(request: Request): Promise<Staff> {
   const key = cookieValue(request, "staff_session");
@@ -29,6 +32,8 @@ export async function staff(request: Request): Promise<Staff> {
       name: s.users.name,
       role: s.users.role,
       active: s.users.active,
+      sessionHash: s.sessions.tokenHash,
+      expiresAt: s.sessions.expiresAt,
     })
     .from(s.sessions)
     .innerJoin(s.users, eq(s.users.id, s.sessions.userId))
@@ -40,7 +45,13 @@ export async function staff(request: Request): Promise<Staff> {
       ),
     );
   if (!row) throw new AppError(401, "UNAUTHORIZED", "로그인이 만료됐어요. 다시 로그인해 주세요.");
-  return row;
+  if (row.expiresAt.getTime() - Date.now() < STAFF_IDLE_MS - STAFF_REFRESH_AFTER_MS)
+    await db
+      .update(s.sessions)
+      .set({ expiresAt: new Date(Date.now() + STAFF_IDLE_MS) })
+      .where(eq(s.sessions.tokenHash, row.sessionHash));
+  const { sessionHash: _, expiresAt: __, ...user } = row;
+  return user;
 }
 export function owner(user: Staff) {
   assert(user.role === "owner", "점주 계정으로 사용할 수 있어요.", "FORBIDDEN", 403);
@@ -77,7 +88,7 @@ export async function login(login: string, password: string) {
   await db.insert(s.sessions).values({
     tokenHash: hash(key),
     userId: user.id,
-    expiresAt: new Date(Date.now() + 12 * 3600_000),
+    expiresAt: new Date(Date.now() + STAFF_IDLE_MS),
   });
   await db.delete(s.rateLimits).where(eq(s.rateLimits.key, `login:${login.toLowerCase()}`));
   return key;
@@ -97,31 +108,19 @@ export async function guestAccess(request: Request, qr: string) {
     .where(and(eq(s.guests.tokenHash, hash(value)), gt(s.guests.expiresAt, new Date())));
   return row?.visit ?? null;
 }
-export async function join(qr: string, code?: string) {
+export async function guestTable(qr: string) {
   const [table] = await db
     .select()
     .from(s.tables)
     .where(and(eq(s.tables.qrToken, qr), eq(s.tables.archived, false)));
-  requireValue(table, "사용할 수 없는 테이블 QR이에요.");
-  return db.transaction(async (tx) => {
-    // Share the same lock as closing/moving a visit, so a grant cannot race its lifecycle.
-    await tx.select().from(s.settings).where(eq(s.settings.id, 1)).for("update");
-    const [visit] = await tx
-      .select()
-      .from(s.visits)
-      .where(and(eq(s.visits.tableId, table.id), eq(s.visits.state, "open")));
-    assert(visit, "직원이 테이블을 준비하고 있어요. 잠시만 기다려 주세요.", "TABLE_NOT_OPEN");
-    const [settings] = await tx.select().from(s.settings);
-    if (settings.pinRequired) {
-      await attempt(`pin:${visit.id}`, 50);
-      assert(code === visit.joinCode, "테이블 입장코드를 확인해 주세요.", "INVALID_CODE", 403);
-    }
-    const key = token();
-    await tx.insert(s.guests).values({
-      tokenHash: hash(key),
-      visitId: visit.id,
-      expiresAt: new Date(Date.now() + 24 * 3600_000),
-    });
-    return key;
+  return requireValue(table, "사용할 수 없는 테이블 QR이에요.");
+}
+export async function grantVisit(visitId: string) {
+  const key = token();
+  await db.insert(s.guests).values({
+    tokenHash: hash(key),
+    visitId,
+    expiresAt: new Date(Date.now() + 30 * 24 * 3600_000),
   });
+  return key;
 }

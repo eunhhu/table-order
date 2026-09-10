@@ -3,6 +3,7 @@ import { asc, eq, gt } from "drizzle-orm";
 
 type Listener = {
   visitId: string | null;
+  tableId: string | null;
   send: (event: string, data: unknown, id?: number) => void;
   close: () => void;
 };
@@ -11,7 +12,7 @@ let cursor: number | undefined;
 let polling = false;
 export function eventStream(
   request: Request,
-  visitId: string | null,
+  scope: { visitId?: string; tableId?: string } | null,
   expiresAt = Date.now() + 12 * 3600_000,
 ) {
   let cleanup = () => {};
@@ -20,7 +21,8 @@ export function eventStream(
       let closed = false;
       const encoder = new TextEncoder();
       const listener: Listener = {
-        visitId,
+        visitId: scope?.visitId ?? null,
+        tableId: scope?.tableId ?? null,
         send(event, data, id) {
           if (closed) return;
           try {
@@ -89,17 +91,29 @@ export function startEventPump() {
       }
       // Revisions are serialized by the store row lock in operations.ts.
       const events = await db
-        .select({ id: s.events.id, visitId: s.events.visitId, type: s.events.type })
+        .select({
+          id: s.events.id,
+          visitId: s.events.visitId,
+          tableId: s.visits.tableId,
+          type: s.events.type,
+        })
         .from(s.events)
+        .leftJoin(s.visits, eq(s.visits.id, s.events.visitId))
         .where(gt(s.events.id, cursor))
         .orderBy(asc(s.events.id))
         .limit(500);
       if (events.length) {
         cursor = events.at(-1)?.id ?? cursor;
         const global = events.some((e) => !e.visitId);
-        const affected = new Set(events.map((e) => e.visitId));
+        const affectedVisits = new Set(events.map((e) => e.visitId));
+        const affectedTables = new Set(events.map((e) => e.tableId));
         for (const listener of listeners)
-          if (global || listener.visitId === null || affected.has(listener.visitId))
+          if (
+            global ||
+            (listener.visitId === null && listener.tableId === null) ||
+            affectedVisits.has(listener.visitId) ||
+            affectedTables.has(listener.tableId)
+          )
             listener.send("sync", { revision: cursor }, cursor);
       } else {
         const [state] = await db

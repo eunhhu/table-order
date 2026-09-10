@@ -1,7 +1,7 @@
 import { type Insights, type Order, type Payment, type Visit, won } from "@table/contracts";
-import { Button, Empty, Modal, Pill } from "@table/ui";
+import { Button, CheckField, Empty, Modal, Pill } from "@table/ui";
 import { api, time } from "@table/ui/client";
-import { CalendarDays, CreditCard, ShoppingBag, Users, Wallet } from "lucide-solid";
+import { CalendarDays, CreditCard, RotateCcw, ShoppingBag, Users, Wallet } from "lucide-solid";
 import { createResource, createSignal, For, Show } from "solid-js";
 import { useAdmin } from "./context";
 
@@ -28,6 +28,8 @@ export function InsightsPage(props: { mode: "insights" | "payments" }) {
   );
   const [voiding, setVoiding] = createSignal<Payment>();
   const [reason, setReason] = createSignal("결제 수단 오기록");
+  const [resetOpen, setResetOpen] = createSignal(false);
+  const [resetConfirmed, setResetConfirmed] = createSignal(false);
   const stats = () => [
     { name: "수납액", value: won(report()?.revenue ?? 0), icon: Wallet, tone: "teal" },
     { name: "방문 팀", value: `${report()?.visits ?? 0}팀`, icon: Users, tone: "blue" },
@@ -53,6 +55,16 @@ export function InsightsPage(props: { mode: "insights" | "payments" }) {
               : "우리 매장의 하루를 숫자로 돌아보세요."}
           </p>
         </div>
+        <Button
+          variant="danger"
+          icon={<RotateCcw size={17} />}
+          onClick={() => {
+            setResetConfirmed(false);
+            setResetOpen(true);
+          }}
+        >
+          영업 기록 초기화
+        </Button>
       </div>
       <form
         class="row between wrap panel"
@@ -317,7 +329,7 @@ export function InsightsPage(props: { mode: "insights" | "payments" }) {
                 <thead>
                   <tr>
                     <th>테이블</th>
-                    <th>입장 시각</th>
+                    <th>첫 주문 시각</th>
                     <th>인원</th>
                     <th>상태</th>
                     <th>주문</th>
@@ -334,13 +346,7 @@ export function InsightsPage(props: { mode: "insights" | "payments" }) {
                           {new Date(v.startedAt).toLocaleDateString("ko-KR")} {time(v.startedAt)}
                         </td>
                         <td>{v.guests ? `${v.guests}명` : "미입력"}</td>
-                        <td>
-                          {v.state === "closed"
-                            ? "퇴석"
-                            : v.state === "settled"
-                              ? "정산 완료"
-                              : "이용 중"}
-                        </td>
+                        <td>{v.state === "closed" ? "종료" : "손님 있음"}</td>
                         <td>
                           <Button
                             variant="secondary"
@@ -381,6 +387,50 @@ export function InsightsPage(props: { mode: "insights" | "payments" }) {
           </>
         )}
       </Show>
+      <Modal
+        open={resetOpen()}
+        title="전체 영업 기록을 초기화할까요?"
+        onClose={() => !ctx.busy() && setResetOpen(false)}
+        busy={ctx.busy()}
+      >
+        <div class="stack">
+          <div class="error-box">
+            모든 주문, 방문, 수납, 판매 통계와 운영 기록이 삭제되고 모든 테이블이 빈 상태가 돼요.
+            메뉴, 테이블, 매장 설정과 직원 계정은 유지됩니다. 이 작업은 되돌릴 수 없어요.
+          </div>
+          <CheckField
+            checked={resetConfirmed()}
+            onChange={setResetConfirmed}
+            label="삭제되는 내용을 확인했어요"
+            detail="영업 중이라면 진행 중인 주문까지 모두 사라져요."
+          />
+          <div class="row">
+            <Button variant="secondary" class="grow" onClick={() => setResetOpen(false)}>
+              취소
+            </Button>
+            <Button
+              variant="danger"
+              class="grow"
+              disabled={!resetConfirmed() || ctx.busy()}
+              onClick={async () => {
+                if (
+                  await ctx.run(
+                    { type: "history.reset", confirm: true },
+                    "영업 기록을 초기화했어요.",
+                  )
+                ) {
+                  setResetOpen(false);
+                  setSelected(undefined);
+                  setQuery({ from: from(), to: to(), page: 0 });
+                  void refetch();
+                }
+              }}
+            >
+              전체 기록 삭제
+            </Button>
+          </div>
+        </div>
+      </Modal>
       <Modal
         open={!!selected()}
         title="방문 · 정산 상세"
@@ -516,7 +566,7 @@ export function InsightsPage(props: { mode: "insights" | "payments" }) {
                                   visitId: h().visit.id,
                                   version: h().visit.version,
                                   method,
-                                  close: false,
+                                  close: true,
                                 },
                                 "수납을 다시 기록했어요.",
                               )

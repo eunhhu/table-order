@@ -10,6 +10,7 @@ export const loginSchema = z.object({ login: label, password: z.string().min(1).
 export const orderLineSchema = z.object({ menuId: id, quantity, expectedPrice: money, note });
 export const guestOrderSchema = z.object({
   requestId: id,
+  visitId: id.optional(),
   lines: z.array(orderLineSchema).min(1).max(50),
   note,
 });
@@ -107,6 +108,7 @@ export const actionSchema = z.discriminatedUnion("type", [
     close: z.boolean(),
   }),
   z.object({ type: z.literal("payment.void"), paymentId: id, reason: label }),
+  z.object({ type: z.literal("history.reset"), confirm: z.literal(true) }),
   z.object({ type: z.literal("settings.save"), settings: settingsSchema }),
   z.object({
     type: z.literal("user.save"),

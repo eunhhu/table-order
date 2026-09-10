@@ -37,7 +37,6 @@ interface CartLine {
 }
 interface Pending {
   request: GuestOrder;
-  visitId: string;
   submittedAt: string;
 }
 const cartSchema = z
@@ -55,7 +54,6 @@ const cartSchema = z
   .max(50);
 const pendingSchema = z.object({
   request: guestOrderSchema,
-  visitId: z.uuid(),
   submittedAt: z.iso.datetime(),
 });
 export function App() {
@@ -79,10 +77,9 @@ export function App() {
 }
 function OrderApp(props: { qr: string }) {
   const base = `/api/guest/${props.qr}`;
-  const [joined, setJoined] = createSignal(false);
   const live = createLive<GuestSnapshot>(
     () => `${base}/snapshot`,
-    () => (joined() ? `${base}/events` : null),
+    () => `${base}/events`,
   );
   const storage = `ongi-cart:${props.qr}`;
   const pendingKey = `ongi-pending:${props.qr}`;
@@ -92,8 +89,6 @@ function OrderApp(props: { qr: string }) {
   const [pending, setPending] = createSignal<Pending | null>(
     pendingSchema.safeParse(readDraft<unknown>(pendingKey, null)).data ?? null,
   );
-  const [pendingIssue, setPendingIssue] = createSignal(false);
-  const [resolveOpen, setResolveOpen] = createSignal(false);
   const [tab, setTab] = createSignal("menu");
   const [category, setCategory] = createSignal("");
   const [search, setSearch] = createSignal("");
@@ -108,13 +103,9 @@ function OrderApp(props: { qr: string }) {
       .safeParse(readDraft<unknown>(`${storage}:note`, "")).data ?? "",
   );
   const [busy, setBusy] = createSignal(false);
-  const [joinBusy, setJoinBusy] = createSignal(false);
-  const [code, setCode] = createSignal("");
-  const [joinError, setJoinError] = createSignal("");
   const [message, setMessage] = createSignal("");
   const [submitError, setSubmitError] = createSignal("");
   const [lastOrder, setLastOrder] = createSignal<number>();
-  let joining = false;
   let checking = false;
   let dismiss: ReturnType<typeof setTimeout>;
   const tell = (text: string) => {
@@ -124,10 +115,7 @@ function OrderApp(props: { qr: string }) {
   };
   const total = () => cart().reduce((sum, l) => sum + l.price * l.quantity, 0);
   const count = () => cart().reduce((sum, l) => sum + l.quantity, 0);
-  const availableToOrder = () =>
-    !!live.data()?.joined &&
-    live.data()?.visit?.state === "open" &&
-    live.data()?.settings.acceptingOrders;
+  const availableToOrder = () => !!live.data()?.settings.acceptingOrders;
   const priceChanged = () =>
     cart().some((l) => live.data()?.menus.find((m) => m.id === l.menuId)?.price !== l.price);
   const unavailable = () =>
@@ -173,37 +161,7 @@ function OrderApp(props: { qr: string }) {
     const data = live.data();
     if (!data) return;
     if (category() && !data.categories.some((c) => c.id === category())) setCategory("");
-    setJoined(data.joined);
-    if (pending() && data.visit && data.visit.id !== pending()?.visitId) setPendingIssue(true);
-    if (!data.joined && !data.ended && !data.pinRequired && !joining) {
-      joining = true;
-      void joinVisit();
-    }
   });
-  async function joinVisit(explicit = false) {
-    if (explicit && pending()) {
-      setPendingIssue(true);
-      setResolveOpen(true);
-      return;
-    }
-    setJoinBusy(true);
-    setJoinError("");
-    try {
-      if (explicit) {
-        setCart([]);
-        setPending(null);
-        setOrderNote("");
-      }
-      await api(`${base}/join`, { code: code() || undefined });
-      await live.refresh();
-    } catch (e) {
-      setJoinError(
-        e instanceof ApiError ? e.message : "연결을 확인하고 있어요. 잠시 후 다시 시도해 주세요.",
-      );
-    } finally {
-      setJoinBusy(false);
-    }
-  }
   function openMenu(menu: Menu) {
     setSelected(menu);
     setQuantity(1);
@@ -231,7 +189,6 @@ function OrderApp(props: { qr: string }) {
     const info = result.data as { number?: number } | undefined;
     setLastOrder(info?.number);
     setPending(null);
-    setPendingIssue(false);
     setCart([]);
     setOrderNote("");
     setCartOpen(false);
@@ -242,7 +199,7 @@ function OrderApp(props: { qr: string }) {
   }
   async function reconcile() {
     const value = pending();
-    if (!value || checking || busy() || pendingIssue()) return;
+    if (!value || checking || busy()) return;
     checking = true;
     try {
       const { result } = await api<{ result: CommandResult | null }>(
@@ -254,13 +211,9 @@ function OrderApp(props: { qr: string }) {
       }
       // Retry only the explicit, already-submitted request with the SAME key.
       // An unsubmitted basket is never sent on reconnect.
-      const visit = live.data()?.visit;
-      if (visit?.id === value.visitId && visit.state === "open")
-        finish(await api<CommandResult>(`${base}/orders`, value.request));
+      finish(await api<CommandResult>(`${base}/orders`, value.request));
     } catch (e) {
-      if (e instanceof ApiError && e.status === 401) {
-        setPendingIssue(true);
-      } else if (e instanceof ApiError && e.status < 500) {
+      if (e instanceof ApiError && e.status < 500) {
         setPending(null);
         setSubmitError(e.message);
         setCartOpen(true);
@@ -270,13 +223,12 @@ function OrderApp(props: { qr: string }) {
     }
   }
   async function submit() {
-    const visit = live.data()?.visit;
-    if (visit?.state !== "open") return;
     if (busy() || pending() || !availableToOrder() || !cart().length) return;
     setSubmitError("");
     setBusy(true);
     const request: GuestOrder = {
       requestId: crypto.randomUUID(),
+      visitId: live.data()?.visit?.id,
       lines: cart().map((l) => ({
         menuId: l.menuId,
         quantity: l.quantity,
@@ -287,7 +239,6 @@ function OrderApp(props: { qr: string }) {
     };
     const value = {
       request,
-      visitId: visit.id,
       submittedAt: new Date().toISOString(),
     };
     if (!storeDraft(pendingKey, value)) {
@@ -353,88 +304,12 @@ function OrderApp(props: { qr: string }) {
         <Show when={pending()}>
           <div class="guest-notice">
             <Clock3 size={16} />
-            <Show
-              when={pendingIssue()}
-              fallback={
-                <span>주문 결과를 확인하고 있어요. 같은 주문을 다시 하지 않아도 돼요.</span>
-              }
-            >
-              <span>
-                이전 주문의 결과를 직원과 확인해 주세요. 확인 전에는 같은 주문을 다시 하지 마세요.
-              </span>
-              <Button variant="secondary" onClick={() => setResolveOpen(true)}>
-                주문 확인
-              </Button>
-            </Show>
+            <span>주문 결과를 확인하고 있어요. 같은 주문을 다시 하지 않아도 돼요.</span>
           </div>
         </Show>
         <Show when={live.connection() === "offline"}>
           <div class="guest-notice">
             <span>연결을 다시 확인하고 있어요. 담아둔 메뉴는 그대로 있어요.</span>
-          </div>
-        </Show>
-        <Show when={live.data()?.ended}>
-          <div class="visit-ended">
-            <CheckCircle2 size={25} />
-            <h3>함께해 주셔서 감사해요</h3>
-            <p>이번 테이블 이용이 종료됐어요.</p>
-            <Button variant="secondary" disabled={joinBusy()} onClick={() => void joinVisit(true)}>
-              새 방문으로 입장
-            </Button>
-          </div>
-        </Show>
-        <Show when={!live.data()?.joined && !live.data()?.ended}>
-          <div class="join-card">
-            <Show
-              when={live.data()?.pinRequired}
-              fallback={
-                <>
-                  <p>{joinError() || "테이블을 확인하고 있어요."}</p>
-                  <Show when={joinError()}>
-                    <Button
-                      variant="secondary"
-                      disabled={joinBusy()}
-                      onClick={() => void joinVisit()}
-                    >
-                      테이블 다시 확인
-                    </Button>
-                  </Show>
-                </>
-              }
-            >
-              <strong>테이블 입장코드를 입력해 주세요</strong>
-              <small>직원이 안내한 6자리 숫자예요.</small>
-              <form
-                class="row"
-                onSubmit={(e) => {
-                  e.preventDefault();
-                  void joinVisit();
-                }}
-              >
-                <input
-                  aria-label="테이블 입장코드"
-                  inputmode="numeric"
-                  maxlength={6}
-                  pattern="[0-9]{6}"
-                  required
-                  autocomplete="one-time-code"
-                  value={code()}
-                  onInput={(e) => setCode(e.currentTarget.value)}
-                />
-                <Button type="submit" disabled={joinBusy()}>
-                  입장
-                </Button>
-              </form>
-              <Show when={joinError()}>
-                <p class="error-box">{joinError()}</p>
-              </Show>
-            </Show>
-          </div>
-        </Show>
-        <Show when={live.data()?.joined && live.data()?.visit?.state === "settled"}>
-          <div class="guest-notice">
-            <CheckCircle2 size={17} />
-            <span>정산이 완료됐어요. 추가 주문은 직원에게 말씀해 주세요.</span>
           </div>
         </Show>
         <Show when={!live.data()?.settings.acceptingOrders}>
@@ -448,7 +323,7 @@ function OrderApp(props: { qr: string }) {
                 <h2>우리 테이블 주문</h2>
                 <p>함께 주문한 내역을 한눈에 확인해요.</p>
               </div>
-              <Show when={lastOrder() && live.data()?.joined}>
+              <Show when={lastOrder()}>
                 <div class="order-success">
                   <CheckCircle2 size={24} />
                   <div>
@@ -681,7 +556,7 @@ function OrderApp(props: { qr: string }) {
                   {!menu().available
                     ? "오늘은 품절이에요"
                     : !availableToOrder()
-                      ? "테이블 입장 후 담을 수 있어요"
+                      ? "지금은 주문을 쉬고 있어요"
                       : `${won(menu().price * quantity())} 담기`}
                 </Button>
               </div>
@@ -807,39 +682,6 @@ function OrderApp(props: { qr: string }) {
           {message()}
         </div>
       </Show>
-      <Modal
-        open={resolveOpen()}
-        title="직원과 주문을 확인해 주세요"
-        onClose={() => setResolveOpen(false)}
-      >
-        <p>
-          입장 정보가 바뀌어 이전 주문의 결과를 자동으로 확인할 수 없어요. 직원에게 주문 시각과 담은
-          메뉴를 보여주세요.
-        </p>
-        <p class="info-box">
-          {pending() ? time(pending()?.submittedAt ?? "") : ""} · 확인 번호{" "}
-          {pending()?.request.requestId.slice(0, 8)}
-        </p>
-        <For each={cart()}>
-          {(line) => (
-            <p>
-              {line.name} {line.quantity}개
-            </p>
-          )}
-        </For>
-        <Button
-          onClick={() => {
-            setPending(null);
-            setPendingIssue(false);
-            setResolveOpen(false);
-            setCart([]);
-            setOrderNote("");
-            tell("확인을 마쳤어요. 필요한 메뉴만 새로 담아 주세요.");
-          }}
-        >
-          직원과 처리 결과를 확인했어요
-        </Button>
-      </Modal>
     </div>
   );
 }

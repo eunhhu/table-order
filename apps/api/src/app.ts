@@ -7,10 +7,10 @@ import { Elysia } from "elysia";
 import sharp from "sharp";
 import { ZodError } from "zod";
 import {
-  cookieValue,
+  grantVisit,
   guestAccess,
   guestCookie,
-  join,
+  guestTable,
   login,
   logout,
   owner,
@@ -20,7 +20,7 @@ import {
 import { beginRequest, finishRequest, processDiagnostics, requestId } from "./diagnostics";
 import { AppError, assert } from "./errors";
 import { eventStream } from "./events";
-import { execute, requestResult, submitGuest } from "./operations";
+import { execute, guestActor, requestResult, submitGuestAtTable } from "./operations";
 import { poster, qrInfo, qrPdf } from "./qr";
 import { adminSnapshot, guestSnapshot, health, historyVisit, insights } from "./queries";
 
@@ -260,34 +260,40 @@ export const app = new Elysia({ serve: { maxRequestBodySize: 12 * 1024 * 1024, i
       404,
     );
     const access = await guestAccess(request, params.qr);
-    return guestSnapshot(
-      params.qr,
-      access?.id ?? null,
-      !!cookieValue(request, `guest_${params.qr}`),
-    );
+    return guestSnapshot(params.qr, access?.state === "open" ? access.id : null);
   })
-  .post("/api/guest/:qr/join", async ({ params, body, set }) => {
+  .post("/api/guest/:qr/join", async ({ params, body }) => {
     assert(/^[a-f0-9]{32}$/.test(params.qr), "올바른 QR로 접속해 주세요.", "INVALID_QR", 404);
-    set.headers["set-cookie"] = guestCookie(
-      params.qr,
-      await join(params.qr, joinSchema.parse(body).code),
-    );
+    joinSchema.parse(body);
+    await guestTable(params.qr);
     return { ok: true };
   })
-  .post("/api/guest/:qr/orders", async ({ request, params, body }) => {
+  .post("/api/guest/:qr/orders", async ({ request, params, body, set }) => {
+    assert(/^[a-f0-9]{32}$/.test(params.qr), "올바른 QR로 접속해 주세요.", "INVALID_QR", 404);
     const access = await guestAccess(request, params.qr);
-    assert(access, "테이블에 다시 입장해 주세요.", "UNAUTHORIZED", 401);
-    return submitGuest(access.id, guestOrderSchema.parse(body));
+    const result = await submitGuestAtTable(
+      params.qr,
+      guestOrderSchema.parse(body),
+      access?.state === "open" ? access.id : undefined,
+    );
+    if (access?.state !== "open") {
+      const visitId = (result.data as { visitId: string }).visitId;
+      set.headers["set-cookie"] = guestCookie(params.qr, await grantVisit(visitId));
+    }
+    return result;
   })
-  .get("/api/guest/:qr/requests/:id", async ({ request, params }) => {
-    const access = await guestAccess(request, params.qr);
-    assert(access, "테이블에 다시 입장해 주세요.", "UNAUTHORIZED", 401);
-    return { result: await requestResult(`guest:${access.id}`, id.parse(params.id)) };
+  .get("/api/guest/:qr/requests/:id", async ({ params }) => {
+    assert(/^[a-f0-9]{32}$/.test(params.qr), "올바른 QR로 접속해 주세요.", "INVALID_QR", 404);
+    return { result: await requestResult(guestActor(params.qr), id.parse(params.id)) };
   })
   .get("/api/guest/:qr/events", async ({ request, params }) => {
+    const table = await guestTable(params.qr);
     const access = await guestAccess(request, params.qr);
-    assert(access && access.state !== "closed", "이번 방문이 종료됐어요.", "VISIT_ENDED", 401);
-    return eventStream(request, access.id, Date.now() + 24 * 3600_000);
+    return eventStream(
+      request,
+      { tableId: table.id, visitId: access?.state === "open" ? access.id : undefined },
+      Date.now() + 24 * 3600_000,
+    );
   });
 
 export type App = typeof app;

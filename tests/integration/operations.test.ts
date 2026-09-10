@@ -3,7 +3,7 @@ import type { Action, AdminSnapshot, GuestOrder, GuestSnapshot, Staff } from "@t
 import { db, schema as s } from "@table/db";
 import { eq, sql } from "drizzle-orm";
 import { app } from "../../apps/api/src/app";
-import { execute, submitGuest } from "../../apps/api/src/operations";
+import { execute, submitGuest, submitGuestAtTable } from "../../apps/api/src/operations";
 import { adminSnapshot, guestSnapshot } from "../../apps/api/src/queries";
 
 if (!new URL(process.env.DATABASE_URL ?? "").pathname.endsWith("_test"))
@@ -45,11 +45,30 @@ beforeEach(async () => {
   qr = crypto.randomUUID().replaceAll("-", "");
   const [table] = await db.insert(s.tables).values({ name: "01", qrToken: qr }).returning();
   tableId = table.id;
-  const result = await command({ type: "visit.open", tableId, guests: null });
-  visitId = (result.data as { visitId: string }).visitId;
+  const [visit] = await db.insert(s.visits).values({ tableId, joinCode: "123456" }).returning();
+  visitId = visit.id;
+  await db.update(s.tables).set({ state: "occupied" }).where(eq(s.tables.id, tableId));
 });
 
 describe("durable orders and concurrent restaurant operations", () => {
+  test("concurrent first orders create exactly one occupied visit", async () => {
+    await command({ type: "visit.close", visitId, version: 1 });
+    await Promise.all(Array.from({ length: 20 }, () => submitGuestAtTable(qr, basket(1))));
+    const state = await snapshot();
+    expect(state.visits).toHaveLength(1);
+    expect(state.orders).toHaveLength(20);
+    expect(state.tables[0].state).toBe("occupied");
+    expect(state.visits[0].total).toBe(220_000);
+  });
+  test("a rejected first order leaves the table empty without a partial visit", async () => {
+    await command({ type: "visit.close", visitId, version: 1 });
+    await db.update(s.menus).set({ available: false }).where(eq(s.menus.id, menuId));
+    await expect(submitGuestAtTable(qr, basket())).rejects.toThrow("품절");
+    const state = await snapshot();
+    expect(state.visits).toHaveLength(0);
+    expect(state.orders).toHaveLength(0);
+    expect(state.tables[0].state).toBe("empty");
+  });
   test("the same submission sent concurrently creates one order, and survives a lost response", async () => {
     const input = basket();
     const responses = await Promise.all(
@@ -140,6 +159,21 @@ describe("durable orders and concurrent restaurant operations", () => {
       }),
     ).rejects.toThrow("다른 직원");
   });
+  test("cancelling every ordered item returns the table to empty", async () => {
+    await submitGuest(visitId, basket(1));
+    const state = await snapshot();
+    await command({
+      type: "item.cancel",
+      itemId: state.orders[0].items[0].id,
+      quantity: 1,
+      reason: "손님 요청",
+      version: state.orders[0].version,
+    });
+    const after = await snapshot();
+    expect(after.visits).toHaveLength(0);
+    expect(after.orders).toHaveLength(0);
+    expect(after.tables[0].state).toBe("empty");
+  });
   test("a new order invalidates an already-open settlement quote", async () => {
     await submitGuest(visitId, basket());
     const quote = (await snapshot()).visits[0];
@@ -166,15 +200,19 @@ describe("durable orders and concurrent restaurant operations", () => {
         method: "card",
         close: false,
       }),
-      submitGuest(visitId, basket(1)),
+      submitGuestAtTable(qr, { ...basket(1), visitId }),
     ]);
     expect(result.filter((r) => r.status === "fulfilled")).toHaveLength(1);
     const state = await snapshot();
-    expect(state.visits[0].total).toBe(state.visits[0].state === "settled" ? 22000 : 33000);
+    if (state.visits.length) expect(state.visits[0].total).toBe(33000);
+    else {
+      expect(state.tables[0].state).toBe("empty");
+      expect((await db.select().from(s.payments))[0].amount).toBe(22000);
+    }
   });
-  test("settled visits still show outstanding food and cannot close before serving", async () => {
+  test("settlement closes the visit and empties the table without a cleaning step", async () => {
     await submitGuest(visitId, basket());
-    let state = await snapshot();
+    const state = await snapshot();
     await command({
       type: "payment.settle",
       visitId,
@@ -182,11 +220,13 @@ describe("durable orders and concurrent restaurant operations", () => {
       method: "cash",
       close: false,
     });
-    state = await snapshot();
-    expect(state.orders).toHaveLength(1);
-    await expect(
-      command({ type: "visit.close", visitId, version: state.visits[0].version }),
-    ).rejects.toThrow("나가지 않은 음식");
+    const after = await snapshot();
+    expect(after.visits).toHaveLength(0);
+    expect(after.orders).toHaveLength(0);
+    expect(after.tables[0].state).toBe("empty");
+    expect((await db.select().from(s.visits).where(eq(s.visits.id, visitId)))[0].state).toBe(
+      "closed",
+    );
   });
   test("serving can be undone through the persisted JSONB result, but not after another change", async () => {
     await submitGuest(visitId, basket());
@@ -223,15 +263,35 @@ describe("durable orders and concurrent restaurant operations", () => {
     expect(after.tables.find((t) => t.id === tableId)?.state).toBe("empty");
     expect((await guestSnapshot(qr, visitId, true)).table.name).toBe("02");
   });
-  test("a closed party cannot read or order into the next visit", async () => {
+  test("a guest can order immediately after a table becomes empty", async () => {
     await command({ type: "visit.close", visitId, version: (await snapshot()).visits[0].version });
-    await command({ type: "table.clean", id: tableId });
-    await command({ type: "visit.open", tableId, guests: null });
-    const old = await guestSnapshot(qr, visitId, true);
-    expect(old.ended).toBe(true);
-    expect(old.orders).toHaveLength(0);
-    expect(old.visit).toBeNull();
-    await expect(submitGuest(visitId, basket())).rejects.toThrow("정산이 끝난");
+    const result = await submitGuestAtTable(qr, basket());
+    const newVisitId = (result.data as { visitId: string }).visitId;
+    expect(newVisitId).not.toBe(visitId);
+    const current = await guestSnapshot(qr);
+    expect(current.joined).toBe(true);
+    expect(current.ended).toBe(false);
+    expect(current.orders).toHaveLength(1);
+    expect(current.visit?.id).toBe(newVisitId);
+    expect((await snapshot()).tables[0].state).toBe("occupied");
+  });
+  test("an owner can reset sales history while preserving store configuration", async () => {
+    await submitGuest(visitId, basket());
+    await command({ type: "history.reset", confirm: true });
+    const state = await snapshot();
+    expect(state.tables).toHaveLength(1);
+    expect(state.tables[0].state).toBe("empty");
+    expect(state.menus).toHaveLength(1);
+    expect(state.visits).toHaveLength(0);
+    expect(state.orders).toHaveLength(0);
+    expect(await db.select().from(s.payments)).toHaveLength(0);
+    expect(await db.select().from(s.events)).toHaveLength(1);
+    await expect(
+      execute({ ...user, role: "staff" }, crypto.randomUUID(), {
+        type: "history.reset",
+        confirm: true,
+      }),
+    ).rejects.toThrow("점주 계정");
   });
   test("zero heads are never invented for a party with no recorded head count", async () => {
     expect((await snapshot()).visits[0].guests).toBeNull();
@@ -293,6 +353,14 @@ describe("HTTP authorization and request boundary", () => {
   });
   test("a normal login authenticates the real snapshot and rejects unrelated browser origins", async () => {
     const cookie = await ownerCookie();
+    expect(cookie).toBeTruthy();
+    const loginResponse = await request("/api/login", {
+      login: "test-owner",
+      password: "TestOwnerPassword2026!",
+    });
+    expect(loginResponse.headers.get("set-cookie")).toContain("Max-Age=31536000");
+    const [session] = await db.select().from(s.sessions).orderBy(sql`${s.sessions.expiresAt} desc`);
+    expect(session.expiresAt.getTime() - Date.now()).toBeGreaterThan(29 * 86400_000);
     const response = await request("/api/admin/snapshot", undefined, cookie);
     expect(response.status).toBe(200);
     const state = (await response.json()) as AdminSnapshot;
@@ -308,17 +376,18 @@ describe("HTTP authorization and request boundary", () => {
       ).status,
     ).toBe(403);
   });
-  test("guest joining and ordering works without any staff receiver", async () => {
+  test("guest ordering works immediately without joining or any staff receiver", async () => {
     const response = await request(`/api/guest/${qr}/join`, {}, undefined, "http://localhost:5174");
     expect(response.status).toBe(200);
-    const cookie = response.headers.get("set-cookie")?.split(";")[0];
     const result = await request(
       `/api/guest/${qr}/orders`,
       basket(),
-      cookie,
+      undefined,
       "http://localhost:5174",
     );
     expect(result.status).toBe(200);
+    const cookie = result.headers.get("set-cookie")?.split(";")[0];
+    expect(cookie).toBeTruthy();
     const state = (await (
       await request(`/api/guest/${qr}/snapshot`, undefined, cookie)
     ).json()) as GuestSnapshot;

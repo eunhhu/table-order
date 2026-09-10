@@ -195,7 +195,7 @@ async function createOrder(
   return {
     visitId,
     detail: `${created.number}번 주문 · ${rows.reduce((sum, row) => sum + row.quantity, 0)}개${recovery ? ` · 사후 입력 (${recovery.reason}, 실제 주문 ${orderedAt.toISOString()})` : ""}`,
-    data: { orderId, number: created.number },
+    data: { orderId, number: created.number, visitId },
   };
 }
 
@@ -203,6 +203,52 @@ export async function submitGuest(visitId: string, input: GuestOrder) {
   return commit(input.requestId, `guest:${visitId}`, input, "order.create", (tx) =>
     createOrder(tx, visitId, input, "guest"),
   );
+}
+export const guestActor = (qr: string) => `guest-table:${hash(qr)}`;
+export async function submitGuestAtTable(qr: string, input: GuestOrder, preferredVisitId?: string) {
+  return commit(input.requestId, guestActor(qr), input, "order.create", async (tx) => {
+    const table = requireValue(
+      (
+        await tx
+          .select()
+          .from(s.tables)
+          .where(and(eq(s.tables.qrToken, qr), eq(s.tables.archived, false)))
+      )[0],
+      "사용할 수 없는 테이블 QR이에요.",
+    );
+    const expectedVisitId = input.visitId ?? preferredVisitId;
+    let current = expectedVisitId
+      ? (await tx.select().from(s.visits).where(eq(s.visits.id, expectedVisitId)))[0]
+      : undefined;
+    if (expectedVisitId)
+      assert(
+        current?.state === "open",
+        "정산과 주문이 겹쳤어요. 주문 내역을 확인한 뒤 필요한 메뉴를 다시 주문해 주세요.",
+        "VISIT_ENDED",
+      );
+    else
+      current = (
+        await tx
+          .select()
+          .from(s.visits)
+          .where(and(eq(s.visits.tableId, table.id), ne(s.visits.state, "closed")))
+      )[0];
+    if (current?.state === "settled") {
+      await tx
+        .update(s.visits)
+        .set({ state: "closed", endedAt: current.endedAt ?? new Date() })
+        .where(eq(s.visits.id, current.id));
+      current = undefined;
+    }
+    if (!current) {
+      [current] = await tx
+        .insert(s.visits)
+        .values({ tableId: table.id, joinCode: String(randomInt(100000, 1000000)) })
+        .returning();
+    }
+    await tx.update(s.tables).set({ state: "occupied" }).where(eq(s.tables.id, current.tableId));
+    return createOrder(tx, current.id, input, "guest");
+  });
 }
 export async function requestResult(actor: string, requestId: string) {
   const [row] = await db
@@ -225,6 +271,7 @@ export async function execute(user: Staff, requestId: string, action: Action) {
     "settings.save",
     "payment.void",
     "user.save",
+    "history.reset",
   ];
   if (adminOnly.includes(action.type)) owner(user);
   const passwordHash =
@@ -364,17 +411,8 @@ export async function execute(user: Staff, requestId: string, action: Action) {
           .from(s.tables)
           .where(and(eq(s.tables.id, action.tableId), eq(s.tables.archived, false)));
         requireValue(table);
-        assert(table.state === "empty", "이미 사용 중이거나 정리가 필요한 테이블이에요.");
-        const [v] = await tx
-          .insert(s.visits)
-          .values({
-            tableId: table.id,
-            guests: action.guests,
-            joinCode: String(randomInt(100000, 1000000)),
-          })
-          .returning();
-        await tx.update(s.tables).set({ state: "occupied" }).where(eq(s.tables.id, table.id));
-        return { visitId: v.id, detail: `${table.name} 손님 받기`, data: { visitId: v.id } };
+        assert(table.state === "empty", "이미 손님이 있는 테이블이에요.");
+        return { detail: `${table.name} 첫 주문 대기 · 방문은 주문과 함께 자동 시작` };
       }
       case "visit.guests": {
         const v = await visit(tx, action.visitId);
@@ -404,17 +442,12 @@ export async function execute(user: Staff, requestId: string, action: Action) {
         assert(v.state !== "closed", "이미 종료됐어요.");
         const entries = await visitItems(tx, v.id);
         assert(v.state === "settled" || orderTotal(entries) === 0, "먼저 정산해 주세요.");
-        assert(
-          entries.every((i) => remaining(i) === 0),
-          "아직 나가지 않은 음식이 있어요. 서빙 또는 취소 후 퇴석해 주세요.",
-          "UNSERVED_ITEMS",
-        );
         await tx
           .update(s.visits)
           .set({ state: "closed", endedAt: new Date(), version: v.version + 1 })
           .where(eq(s.visits.id, v.id));
-        await tx.update(s.tables).set({ state: "cleaning" }).where(eq(s.tables.id, v.tableId));
-        return { visitId: v.id, detail: "퇴석 · 정리 대기" };
+        await tx.update(s.tables).set({ state: "empty" }).where(eq(s.tables.id, v.tableId));
+        return { visitId: v.id, detail: "테이블 비움" };
       }
       case "order.create":
         return createOrder(tx, action.visitId, action, "staff");
@@ -484,6 +517,16 @@ export async function execute(user: Staff, requestId: string, action: Action) {
         }
         await touchOrder(tx, row.id);
         await touchVisit(tx, v.id);
+        if (action.type === "item.cancel") {
+          const updatedItems = await visitItems(tx, v.id);
+          if (updatedItems.every((entry) => entry.cancelled === entry.quantity)) {
+            await tx
+              .update(s.visits)
+              .set({ state: "closed", endedAt: new Date(), version: sql`${s.visits.version}+1` })
+              .where(eq(s.visits.id, v.id));
+            await tx.update(s.tables).set({ state: "empty" }).where(eq(s.tables.id, v.tableId));
+          }
+        }
         const description =
           action.type === "item.cancel"
             ? `취소 (${action.reason})`
@@ -548,12 +591,6 @@ export async function execute(user: Staff, requestId: string, action: Action) {
           .where(and(eq(s.payments.visitId, v.id), sql`${s.payments.voidedAt} is null`));
         assert(!existing, "이미 수납 기록이 있어요.");
         const entries = await visitItems(tx, v.id);
-        if (action.close && v.state !== "closed")
-          assert(
-            entries.every((i) => !remaining(i)),
-            "아직 나가지 않은 음식이 있어요. 정산만 하거나, 서빙·취소 후 퇴석해 주세요.",
-            "UNSERVED_ITEMS",
-          );
         const table = requireValue(
           (await tx.select().from(s.tables).where(eq(s.tables.id, v.tableId)))[0],
         );
@@ -565,17 +602,16 @@ export async function execute(user: Staff, requestId: string, action: Action) {
           actor: user.name,
           tableName: table.name,
         });
-        const closed = action.close || v.state === "closed";
         await tx
           .update(s.visits)
           .set({
-            state: closed ? "closed" : "settled",
+            state: "closed",
             version: v.version + 1,
-            endedAt: v.endedAt ?? (closed ? new Date() : null),
+            endedAt: v.endedAt ?? new Date(),
           })
           .where(eq(s.visits.id, v.id));
-        if (closed && v.state !== "closed")
-          await tx.update(s.tables).set({ state: "cleaning" }).where(eq(s.tables.id, v.tableId));
+        if (v.state !== "closed")
+          await tx.update(s.tables).set({ state: "empty" }).where(eq(s.tables.id, v.tableId));
         return {
           visitId: v.id,
           detail: `${table.name} ${amount.toLocaleString()}원 수납 기록 · ${user.name}`,
@@ -602,7 +638,10 @@ export async function execute(user: Staff, requestId: string, action: Action) {
           !action.settings.logo || /^\/uploads\/[a-f0-9-]+\.webp$/.test(action.settings.logo),
           "업로드한 로고를 선택해 주세요.",
         );
-        await tx.update(s.settings).set(action.settings).where(eq(s.settings.id, 1));
+        await tx
+          .update(s.settings)
+          .set({ ...action.settings, pinRequired: false })
+          .where(eq(s.settings.id, 1));
         return { detail: "매장 설정 저장" };
       }
       case "user.save": {
@@ -634,6 +673,18 @@ export async function execute(user: Staff, requestId: string, action: Action) {
           await tx.insert(s.users).values({ ...values, passwordHash });
         }
         return { detail: `${action.name} 계정 저장` };
+      }
+      case "history.reset": {
+        assert(action.confirm, "초기화 내용을 확인해 주세요.");
+        await tx.update(s.tables).set({ state: "empty" });
+        await tx.delete(s.events);
+        await tx.delete(s.commands);
+        await tx.delete(s.guests);
+        await tx.delete(s.items);
+        await tx.delete(s.payments);
+        await tx.delete(s.orders);
+        await tx.delete(s.visits);
+        return { detail: `전체 영업 기록 초기화 · ${user.name}` };
       }
     }
   });

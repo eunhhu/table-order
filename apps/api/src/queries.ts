@@ -80,15 +80,15 @@ export async function adminSnapshot(staff: Staff): Promise<AdminSnapshot> {
 
 export async function guestSnapshot(
   qr: string,
-  grantVisitId: string | null,
-  hadCookie: boolean,
+  grantVisitId: string | null = null,
+  _hadCookie = false,
 ): Promise<GuestSnapshot> {
   return db.transaction(
     async (tx) => {
       const [settings] = await tx.select().from(s.settings);
       const {
-        pinRequired,
-        advancedKitchen: _,
+        pinRequired: _pinRequired,
+        advancedKitchen: _advancedKitchen,
         businessDayStart: __,
         id: ___,
         ...publicSettings
@@ -102,15 +102,22 @@ export async function guestSnapshot(
         )[0],
         "사용할 수 없는 테이블 QR이에요.",
       );
-      const v = grantVisitId
+      let v = grantVisitId
         ? (await tx.select().from(s.visits).where(eq(s.visits.id, grantVisitId)))[0]
-        : null;
-      // A grant follows its visit when staff move the party; the printed QR itself does not.
-      if (v && v.state !== "closed")
+        : undefined;
+      if (v?.state !== "open")
+        v = (
+          await tx
+            .select()
+            .from(s.visits)
+            .where(and(eq(s.visits.tableId, table.id), eq(s.visits.state, "open")))
+        )[0];
+      // After the first order, the invisible browser grant follows a moved table.
+      if (v?.state === "open")
         table = requireValue(
           (await tx.select().from(s.tables).where(eq(s.tables.id, v.tableId)))[0],
         );
-      const orders = v && v.state !== "closed" ? await orderRows(tx, [v.id]) : [];
+      const orders = v?.state === "open" ? await orderRows(tx, [v.id]) : [];
       const menus = await tx
         .select()
         .from(s.menus)
@@ -122,7 +129,7 @@ export async function guestSnapshot(
         .where(eq(s.categories.archived, false))
         .orderBy(asc(s.categories.sort));
       const safeVisit =
-        v && v.state !== "closed"
+        v?.state === "open"
           ? {
               id: v.id,
               tableId: v.tableId,
@@ -142,9 +149,9 @@ export async function guestSnapshot(
         categories,
         visit: safeVisit,
         orders,
-        joined: !!v && v.state !== "closed",
-        ended: hadCookie && (!v || v.state === "closed"),
-        pinRequired,
+        joined: true,
+        ended: false,
+        pinRequired: false,
       });
     },
     { isolationLevel: "repeatable read", accessMode: "read only" },

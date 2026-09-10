@@ -15,6 +15,20 @@
       "when": 1788951315181,
       "tag": "0001_glossy_liz_osborn",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1789011000000,
+      "tag": "0002_simplify_table_flow",
+      "breakpoints": true
+    },
+    {
+      "idx": 3,
+      "version": "7",
+      "when": 1789011600000,
+      "tag": "0003_close_empty_legacy_visits",
+      "breakpoints": true
     }
   ]
 }

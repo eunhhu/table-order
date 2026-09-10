@@ -28,6 +28,7 @@ const basket = (key = crypto.randomUUID()) => ({
   note: "",
 });
 const action = (value: Parameters<typeof execute>[2]) => execute(user, crypto.randomUUID(), value);
+let currentVisitId: string = visitId;
 async function start() {
   child = Bun.spawn(["bun", "apps/api/src/index.ts"], {
     env: { ...process.env, PORT: String(port), HOST: "127.0.0.1", NODE_ENV: "test" },
@@ -149,7 +150,7 @@ test("committed orders and commands survive process death, with new-device SSE b
 });
 
 test("settlement corrections preserve originals and historical menu prices in full-period aggregates", async () => {
-  let state = await adminSnapshot(user);
+  const state = await adminSnapshot(user);
   await action({
     type: "payment.settle",
     visitId,
@@ -159,11 +160,11 @@ test("settlement corrections preserve originals and historical menu prices in fu
   });
   const [payment] = await db.select().from(s.payments).where(eq(s.payments.visitId, visitId));
   await action({ type: "payment.void", paymentId: payment.id, reason: "결제 수단 오기록" });
-  state = await adminSnapshot(user);
+  const [closedVisit] = await db.select().from(s.visits).where(eq(s.visits.id, visitId));
   await action({
     type: "payment.settle",
     visitId,
-    version: state.visits[0].version,
+    version: closedVisit.version,
     method: "cash",
     close: false,
   });
@@ -181,10 +182,13 @@ test("settlement corrections preserve originals and historical menu prices in fu
 test("late paper orders keep their actual and recorded time separately", async () => {
   const [current] = await db.select().from(s.payments).where(sql`${s.payments.voidedAt} is null`);
   await action({ type: "payment.void", paymentId: current.id, reason: "사후 주문 검증" });
+  const [opened] = await db.insert(s.visits).values({ tableId, joinCode: "654321" }).returning();
+  currentVisitId = opened.id;
+  await db.update(s.tables).set({ state: "occupied" }).where(eq(s.tables.id, tableId));
   const orderedAt = new Date(Date.now() - 3600_000).toISOString();
   const result = await action({
     type: "order.create",
-    visitId,
+    visitId: currentVisitId,
     lines: basket().lines,
     custom: [],
     note: "",
@@ -198,7 +202,7 @@ test("late paper orders keep their actual and recorded time separately", async (
   await expect(
     action({
       type: "order.create",
-      visitId,
+      visitId: currentVisitId,
       lines: basket().lines,
       custom: [],
       note: "",
@@ -219,6 +223,6 @@ test("latest serving state is recovered after restart even if old events are gon
   });
   const recovered = await snap.json();
   expect(recovered.orders.find((o: { id: string }) => o.id === order.id).items[0].served).toBe(1);
-  expect(recovered.orders).toHaveLength(3);
+  expect(recovered.orders).toHaveLength(1);
   await kill();
 });
