@@ -102,17 +102,10 @@ export async function guestSnapshot(
         )[0],
         "사용할 수 없는 테이블 QR이에요.",
       );
-      let v = grantVisitId
+      // Never fall back from an absent/closed grant to the table's next party.
+      const v = grantVisitId
         ? (await tx.select().from(s.visits).where(eq(s.visits.id, grantVisitId)))[0]
         : undefined;
-      if (v?.state !== "open")
-        v = (
-          await tx
-            .select()
-            .from(s.visits)
-            .where(and(eq(s.visits.tableId, table.id), eq(s.visits.state, "open")))
-        )[0];
-      // After the first order, the invisible browser grant follows a moved table.
       if (v?.state === "open")
         table = requireValue(
           (await tx.select().from(s.tables).where(eq(s.tables.id, v.tableId)))[0],
@@ -149,8 +142,8 @@ export async function guestSnapshot(
         categories,
         visit: safeVisit,
         orders,
-        joined: true,
-        ended: false,
+        joined: v?.state === "open",
+        ended: grantVisitId !== null && v?.state !== "open",
         pinRequired: false,
       });
     },

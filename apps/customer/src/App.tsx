@@ -25,6 +25,7 @@ import {
 } from "lucide-solid";
 import { createEffect, createSignal, For, onCleanup, onMount, Show } from "solid-js";
 import { z } from "zod";
+import { mayRetryPending } from "./pending";
 
 interface CartLine {
   key: string;
@@ -57,32 +58,43 @@ const pendingSchema = z.object({
   submittedAt: z.iso.datetime(),
 });
 export function App() {
-  const qr = location.pathname.match(/^\/t\/([a-f0-9]{32})\/?$/)?.[1] ?? "";
+  const entry = location.pathname.match(/^\/t\/([a-f0-9]{32})\/?$/)?.[1];
+  const route = location.pathname.match(/^\/menu\/([a-f0-9]{32})\/([a-f0-9]{64})\/?$/);
+  const qr = route?.[1] ?? "";
+  const page = route?.[2] ?? "";
+  onMount(() => {
+    // Preserve printed QR URLs, but remove the entry page from normal back navigation.
+    if (entry) location.replace(`/api/guest/${entry}/enter`);
+  });
   return (
     <Show
-      when={qr}
+      when={qr && page}
       fallback={
         <div class="customer-landing">
           <Empty
             icon={<QrCode size={36} />}
-            title="테이블의 QR로 만나요"
+            title={entry ? "테이블에 연결하고 있어요" : "테이블의 QR로 만나요"}
             description="테이블에 놓인 주문 QR을 카메라로 스캔해 주세요. 메뉴와 주문 내역을 바로 볼 수 있어요."
           />
         </div>
       }
     >
-      <OrderApp qr={qr} />
+      <OrderApp qr={qr} page={page} />
     </Show>
   );
 }
-function OrderApp(props: { qr: string }) {
+function OrderApp(props: { qr: string; page: string }) {
   const base = `/api/guest/${props.qr}`;
+  const endpoint = (path: string) => `${base}/${path}?page=${props.page}`;
+  const [ended, setEnded] = createSignal(false);
   const live = createLive<GuestSnapshot>(
-    () => `${base}/snapshot`,
-    () => `${base}/events`,
+    () => endpoint("snapshot"),
+    () => endpoint("events"),
+    () => !ended(),
   );
-  const storage = `ongi-cart:${props.qr}`;
-  const pendingKey = `ongi-pending:${props.qr}`;
+  // Never import baskets/pending requests from another visit or legacy table-only keys.
+  const storage = `ongi-cart:${props.qr}:${props.page}`;
+  const pendingKey = `ongi-pending:${props.qr}:${props.page}`;
   const [cart, setCart] = createSignal<CartLine[]>(
     cartSchema.safeParse(readDraft<unknown>(storage, [])).data ?? [],
   );
@@ -115,7 +127,8 @@ function OrderApp(props: { qr: string }) {
   };
   const total = () => cart().reduce((sum, l) => sum + l.price * l.quantity, 0);
   const count = () => cart().reduce((sum, l) => sum + l.quantity, 0);
-  const availableToOrder = () => !!live.data()?.settings.acceptingOrders;
+  const availableToOrder = () =>
+    !ended() && !!live.data()?.joined && !!live.data()?.settings.acceptingOrders;
   const priceChanged = () =>
     cart().some((l) => live.data()?.menus.find((m) => m.id === l.menuId)?.price !== l.price);
   const unavailable = () =>
@@ -141,6 +154,14 @@ function OrderApp(props: { qr: string }) {
           { id: "", name: "더 맛있는 선택", menus: visibleMenus().filter((m) => !m.categoryId) },
         ].filter((g) => g.menus.length)
       : [{ id: "", name: "메뉴", menus: visibleMenus() }];
+  createEffect(() => {
+    const error = live.error();
+    if (
+      live.data()?.ended ||
+      (error instanceof ApiError && [401, 403, 404, 410].includes(error.status))
+    )
+      setEnded(true);
+  });
   createEffect(() => {
     storeDraft(storage, cart());
   });
@@ -203,20 +224,27 @@ function OrderApp(props: { qr: string }) {
     checking = true;
     try {
       const { result } = await api<{ result: CommandResult | null }>(
-        `${base}/requests/${value.request.requestId}`,
+        endpoint(`requests/${value.request.requestId}`),
       );
       if (result) {
         finish(result);
         return;
       }
-      // Retry only the explicit, already-submitted request with the SAME key.
-      // An unsubmitted basket is never sent on reconnect.
-      finish(await api<CommandResult>(`${base}/orders`, value.request));
+      // Confirm durable results first, even for an old request. Only retransmission expires.
+      if (ended() || !mayRetryPending(value.submittedAt)) {
+        setPending(null);
+        setSubmitError("자동 재전송을 중단했어요. 직원에게 기존 주문 접수 여부를 확인해 주세요.");
+        setCartOpen(true);
+        return;
+      }
+      // Retry only this page's explicit request with the SAME key; never an old basket.
+      finish(await api<CommandResult>(endpoint("orders"), value.request));
     } catch (e) {
       if (e instanceof ApiError && e.status < 500) {
         setPending(null);
         setSubmitError(e.message);
         setCartOpen(true);
+        if ([401, 403, 404, 410].includes(e.status)) setEnded(true);
       }
     } finally {
       checking = false;
@@ -228,7 +256,6 @@ function OrderApp(props: { qr: string }) {
     setBusy(true);
     const request: GuestOrder = {
       requestId: crypto.randomUUID(),
-      visitId: live.data()?.visit?.id,
       lines: cart().map((l) => ({
         menuId: l.menuId,
         quantity: l.quantity,
@@ -250,11 +277,12 @@ function OrderApp(props: { qr: string }) {
     }
     setPending(value);
     try {
-      finish(await api<CommandResult>(`${base}/orders`, request));
+      finish(await api<CommandResult>(endpoint("orders"), request));
     } catch (e) {
       if (e instanceof ApiError && e.status < 500) {
         setPending(null);
         setSubmitError(e.message);
+        if ([401, 403, 404, 410].includes(e.status)) setEnded(true);
         void live.refresh();
       } else
         setSubmitError(
@@ -288,17 +316,28 @@ function OrderApp(props: { qr: string }) {
         </div>
       </header>
       <Show
-        when={live.data()}
+        when={!ended() && live.data()}
         fallback={
-          <div class="customer-loading">
-            <For each={[1, 2, 3]}>
-              {() => <div class="skeleton" style="height:120px;margin-bottom:15px" />}
-            </For>
-            <Show when={live.error()}>
-              <p class="error-box">메뉴를 불러오지 못했어요. 연결을 확인해 주세요.</p>
-              <Button onClick={() => void live.refresh()}>다시 불러오기</Button>
-            </Show>
-          </div>
+          <Show
+            when={ended()}
+            fallback={
+              <div class="customer-loading">
+                <For each={[1, 2, 3]}>
+                  {() => <div class="skeleton" style="height:120px;margin-bottom:15px" />}
+                </For>
+                <Show when={live.error()}>
+                  <p class="error-box">메뉴를 불러오지 못했어요. 연결을 확인해 주세요.</p>
+                  <Button onClick={() => void live.refresh()}>다시 불러오기</Button>
+                </Show>
+              </div>
+            }
+          >
+            <Empty
+              icon={<QrCode size={36} />}
+              title="이 테이블 이용은 종료됐어요"
+              description="주문하려면 테이블에 놓인 QR을 다시 스캔해 주세요. 이전 주문의 접수 여부는 직원에게 문의해 주세요."
+            />
+          </Show>
         }
       >
         <Show when={pending()}>

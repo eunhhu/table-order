@@ -1,7 +1,7 @@
 import { afterAll, beforeAll, expect, test } from "bun:test";
 import { db, schema as s } from "@table/db";
 import { eq, sql } from "drizzle-orm";
-import { hash } from "../../apps/api/src/auth";
+import { guestPageHash } from "../../apps/api/src/guest-page";
 import { execute } from "../../apps/api/src/operations";
 import { adminSnapshot, insights } from "../../apps/api/src/queries";
 
@@ -15,6 +15,7 @@ const visitId = crypto.randomUUID(),
   menuId = crypto.randomUUID(),
   userId = crypto.randomUUID();
 const guestCookie = `guest_${qr}=${crypto.randomUUID()}`;
+const page = guestPageHash(qr, guestCookie.split("=")[1]);
 const user = {
   id: userId,
   login: "recovery-owner",
@@ -54,7 +55,7 @@ async function kill() {
   }
 }
 const post = (body: ReturnType<typeof basket>) =>
-  fetch(`http://127.0.0.1:${port}/api/guest/${qr}/orders`, {
+  fetch(`http://127.0.0.1:${port}/api/guest/${qr}/orders?page=${page}`, {
     method: "POST",
     headers: { cookie: guestCookie, "content-type": "application/json" },
     body: JSON.stringify(body),
@@ -73,7 +74,7 @@ beforeAll(async () => {
   await db.insert(s.menus).values({ id: menuId, name: "복구 검증 메뉴", price: 1000 });
   await db.insert(s.guests).values({
     visitId,
-    tokenHash: hash(guestCookie.split("=")[1]),
+    tokenHash: page,
     expiresAt: new Date(Date.now() + 3600_000),
   });
 });
@@ -130,7 +131,7 @@ test("committed orders and commands survive process death, with new-device SSE b
   expect(performance.now() - started).toBeLessThan(30000);
   expect(await (await post(input)).json()).toEqual(original);
   const controller = new AbortController();
-  const response = await fetch(`http://127.0.0.1:${port}/api/guest/${qr}/events`, {
+  const response = await fetch(`http://127.0.0.1:${port}/api/guest/${qr}/events?page=${page}`, {
     headers: { cookie: guestCookie, "Last-Event-ID": "999999999" },
     signal: controller.signal,
   });
@@ -140,7 +141,7 @@ test("committed orders and commands survive process death, with new-device SSE b
   const event = await reader?.read();
   expect(new TextDecoder().decode(event?.value)).toContain("event: sync");
   controller.abort();
-  const snap = await fetch(`http://127.0.0.1:${port}/api/guest/${qr}/snapshot`, {
+  const snap = await fetch(`http://127.0.0.1:${port}/api/guest/${qr}/snapshot?page=${page}`, {
     headers: { cookie: guestCookie },
   });
   const data = await snap.json();
@@ -211,15 +212,25 @@ test("late paper orders keep their actual and recorded time separately", async (
   ).rejects.toThrow("최근 7일");
 });
 
-test("latest serving state is recovered after restart even if old events are gone", async () => {
+test("latest serving state is recovered after restart with a fresh visit grant", async () => {
   const state = await adminSnapshot(user);
   const order = state.orders[0];
   await action({ type: "order.ack", orderId: order.id });
   await action({ type: "order.serve", orderId: order.id, version: order.version + 1 });
   await db.delete(s.events);
   await start();
-  const snap = await fetch(`http://127.0.0.1:${port}/api/guest/${qr}/snapshot`, {
+  const stale = await fetch(`http://127.0.0.1:${port}/api/guest/${qr}/snapshot?page=${page}`, {
     headers: { cookie: guestCookie },
+  });
+  expect((await stale.json()).ended).toBe(true);
+  const entered = await fetch(`http://127.0.0.1:${port}/api/guest/${qr}/enter`, {
+    redirect: "manual",
+  });
+  expect(entered.status).toBe(303);
+  const cookie = entered.headers.get("set-cookie")?.split(";")[0] ?? "";
+  const freshPage = guestPageHash(qr, cookie.split("=")[1]);
+  const snap = await fetch(`http://127.0.0.1:${port}/api/guest/${qr}/snapshot?page=${freshPage}`, {
+    headers: { cookie },
   });
   const recovered = await snap.json();
   expect(recovered.orders.find((o: { id: string }) => o.id === order.id).items[0].served).toBe(1);
