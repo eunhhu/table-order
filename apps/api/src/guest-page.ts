@@ -86,13 +86,21 @@ export async function guestPageAccess(request: Request, qr: string) {
   // The URL contains only a public identifier, never the bearer credential.
   // Pinning it prevents a re-scan in another tab from reviving this old page.
   if (!key || !/^[a-f0-9]{64}$/.test(page) || guestPageHash(qr, key) !== page)
-    throw new AppError(401, "SESSION_EXPIRED", "이용이 종료됐어요. 테이블 QR을 다시 스캔해 주세요.");
+    throw new AppError(
+      401,
+      "SESSION_EXPIRED",
+      "이용이 종료됐어요. 테이블 QR을 다시 스캔해 주세요.",
+    );
   const [access] = await db
     .select({ visit: s.visits, expiresAt: s.guests.expiresAt })
     .from(s.guests)
     .innerJoin(s.visits, eq(s.visits.id, s.guests.visitId))
     .where(and(eq(s.guests.tokenHash, page), gt(s.guests.expiresAt, new Date())));
   if (!access)
-    throw new AppError(401, "SESSION_EXPIRED", "이용이 종료됐어요. 테이블 QR을 다시 스캔해 주세요.");
+    throw new AppError(
+      401,
+      "SESSION_EXPIRED",
+      "이용이 종료됐어요. 테이블 QR을 다시 스캔해 주세요.",
+    );
   return access;
 }
